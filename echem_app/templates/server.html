@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Neotrient · Server Status</title>
+<link rel="icon" type="image/png"
+      href="{{ url_for('static', filename='img/neotrient_logo.png') }}" />
+<style>
+  :root {
+    --indigo: #5258BF; --indigo-soft: #95B7F9; --indigo-light: #EEF0FA;
+    --green: #16A34A; --text-dark: #1A1F36; --text-body: #4A5275;
+    --text-muted: #8590B2; --bg: #F5F6FB; --card: #FFFFFF;
+    --card-border: #E8EBF2;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text-body);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Inter",
+                    "Segoe UI", Roboto, Helvetica, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 560px; margin: 0 auto;
+    padding: 60px 24px 40px;
+    text-align: center;
+  }
+  .logo { max-width: 220px; height: auto; margin: 0 auto 22px; display: block; }
+  h1 {
+    margin: 0 0 6px; font-size: 22px; color: var(--text-dark);
+    font-weight: 700;
+  }
+  .ver {
+    font-size: 11.5px; color: var(--text-muted);
+    letter-spacing: 1.5px; text-transform: uppercase;
+    margin-bottom: 26px;
+  }
+  .running {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: rgba(22, 163, 74, 0.08);
+    color: var(--green);
+    padding: 8px 16px; border-radius: 100px;
+    font-size: 13px; font-weight: 600;
+    margin-bottom: 28px;
+  }
+  .running .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--green);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.4); }
+    50%      { box-shadow: 0 0 0 8px rgba(22, 163, 74, 0); }
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 16px;
+    text-align: left;
+  }
+  .card h2 {
+    margin: 0 0 14px;
+    font-size: 12px; font-weight: 700; letter-spacing: 1.2px;
+    text-transform: uppercase; color: var(--text-muted);
+  }
+  .url {
+    display: block;
+    background: var(--indigo-light); color: var(--indigo);
+    padding: 14px 16px; border-radius: 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 15px; font-weight: 600;
+    text-align: center; word-break: break-all;
+    text-decoration: none;
+    border: 1px solid rgba(82, 88, 191, 0.15);
+    margin-bottom: 8px;
+  }
+  .url:hover { background: rgba(82, 88, 191, 0.12); }
+  .url.alt {
+    background: white; color: var(--text-body);
+    border: 1px dashed var(--card-border);
+    font-weight: 500;
+  }
+  .help {
+    font-size: 12.5px; color: var(--text-muted);
+    margin: 8px 4px 0;
+  }
+
+  .qr-block { text-align: center; }
+  .qr {
+    background: white; padding: 12px; border-radius: 12px;
+    border: 1px solid var(--card-border);
+    display: inline-block;
+    margin: 4px 0 8px;
+  }
+  .qr svg { display: block; width: 200px; height: 200px; }
+
+  .actions {
+    display: flex; gap: 10px;
+    margin-top: 22px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    flex: 1 1 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 12px 16px;
+    border-radius: 10px;
+    font: inherit; font-weight: 600; font-size: 14px;
+    cursor: pointer; text-decoration: none;
+    border: 1px solid transparent;
+    transition: all 0.15s;
+    min-height: 44px;
+  }
+  .btn.primary { background: var(--indigo); color: white; }
+  .btn.primary:hover { background: #4146A8; }
+  .btn.secondary {
+    background: white; color: var(--indigo);
+    border-color: var(--indigo);
+  }
+  .btn.secondary:hover { background: var(--indigo-light); }
+
+  footer {
+    margin-top: 32px;
+    font-size: 11.5px; color: var(--text-muted);
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <img class="logo"
+       src="{{ url_for('static', filename='img/neotrient_logo.png') }}"
+       alt="Neotrient" />
+  <h1>Electrochemical Analysis</h1>
+  <div class="ver">Server · v{{ version }}</div>
+
+  <div class="running">
+    <span class="dot"></span> Server running
+  </div>
+
+  <div class="card">
+    <h2>Open this app on your phone or tablet</h2>
+    <a class="url" href="{{ lan_url }}">{{ lan_url }}</a>
+    {% if mdns_url %}
+      <a class="url alt" href="{{ mdns_url }}">{{ mdns_url }}</a>
+    {% endif %}
+    <p class="help">
+      Both devices must be on the same WiFi.
+      On iPhone Safari, tap <strong>Share → Add to Home Screen</strong>
+      to install the Neotrient logo as an app icon.
+    </p>
+  </div>
+
+  <div class="card qr-block">
+    <h2>Or scan this QR with your phone</h2>
+    <div class="qr">{{ qr_svg|safe }}</div>
+    <p class="help">Camera-scan the QR to open the app on your phone.</p>
+  </div>
+
+  <div class="actions">
+    <a class="btn primary" href="/">Open desktop UI</a>
+    <a class="btn secondary" href="/server?refresh=1">Refresh URLs</a>
+  </div>
+
+  <footer>
+    Auto-saving every measurement to:<br/>
+    <code>~/Documents/Neotrient/results/&lt;date&gt;/</code><br/><br/>
+    Quit the app to stop the server.
+  </footer>
+</div>
+
+</body>
+</html>

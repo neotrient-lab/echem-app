@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Neotrient · Electrochemical Analysis</title>
+
+<!-- Progressive Web App — when added to home screen on iOS the app
+     opens fullscreen with the Neotrient logo (no Safari URL bar). -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Neotrient" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="theme-color" content="#5258BF" />
+<link rel="apple-touch-icon"
+      href="{{ url_for('static', filename='img/neotrient_logo.png') }}" />
+<link rel="icon" type="image/png"
+      href="{{ url_for('static', filename='img/neotrient_logo.png') }}" />
+
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+</head>
+<body>
+
+<!-- Splash overlay — opens with the Neotrient video, fades out when the
+     video ends.  Also re-shown briefly when the operator cancels the
+     session (the "closing" animation). -->
+<div class="splash-overlay" id="splashOverlay">
+  <video id="splashVideo"
+         class="splash-video"
+         src="{{ url_for('static', filename='img/neotrient.mp4') }}"
+         autoplay muted playsinline></video>
+  <button class="splash-skip" onclick="hideSplash()">Skip</button>
+</div>
+
+<div class="app">
+
+  <header class="header">
+    <div class="header-left">
+      <div class="header-title">NEOTRIENT · ELECTROCHEMICAL ANALYSIS</div>
+    </div>
+    <div class="header-right">
+      <span id="hdrSample" class="sample-pill hidden">Sample: <span id="hdrSampleId">—</span></span>
+      <span id="hdrBtIcon" class="hdr-bt-icon hidden" title="Bluetooth connected">
+        <svg width="14" height="20" viewBox="0 0 14 20" xmlns="http://www.w3.org/2000/svg">
+          <path d="M2 5 L12 15 L7 19 L7 1 L12 5 L2 15"
+                fill="none" stroke="currentColor" stroke-width="1.6"
+                stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <button class="header-action danger"
+              onclick="cancelSession()"
+              title="Discard the current session and return to Configuration">
+        Cancel session
+      </button>
+      <button class="help-btn" onclick="toggleHelp()" title="User guide">?</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ============================== SIDEBAR (30%) ===================== -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <img src="{{ url_for('static', filename='img/neotrient_logo.png') }}"
+             alt="Neotrient"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';"
+             class="brand-img" />
+        <div class="brand" style="display:none;">Neotrient</div>
+        <div class="product-tag">Lab Analysis · v{{ app_version }}</div>
+      </div>
+
+      <div class="sidebar-section-label">Workflow</div>
+      <ul class="phases" id="phases">
+        <li class="phase active" data-phase="0" onclick="userClickPhase(0)">
+          <div class="phase-num">1</div>
+          <div class="phase-label"><strong>Configuration</strong><span>Operator · Device · Preset</span></div>
+        </li>
+        <li class="phase" data-phase="1" onclick="userClickPhase(1)">
+          <div class="phase-num">2</div>
+          <div class="phase-label"><strong>Sample Identification</strong><span>QR scan · LIMS lookup</span></div>
+        </li>
+        <li class="phase" data-phase="2" onclick="userClickPhase(2)">
+          <div class="phase-num">3</div>
+          <div class="phase-label"><strong>Sample Loading</strong><span>Drop-detect or manual start</span></div>
+        </li>
+        <li class="phase" data-phase="3" onclick="userClickPhase(3)">
+          <div class="phase-num">4</div>
+          <div class="phase-label"><strong>Measurement</strong><span>Cyclic voltammetry</span></div>
+        </li>
+        <li class="phase" data-phase="4" onclick="userClickPhase(4)">
+          <div class="phase-num">5</div>
+          <div class="phase-label"><strong>Analysis</strong><span>Concentration prediction</span></div>
+        </li>
+        <li class="phase" data-phase="5" onclick="userClickPhase(5)">
+          <div class="phase-num">6</div>
+          <div class="phase-label"><strong>Save Data</strong><span>Sign-off · Export bundle</span></div>
+        </li>
+      </ul>
+
+      <div class="sidebar-meta">
+        <div class="meta-row"><span class="key">Operator</span><span class="val" id="metaOperator">—</span></div>
+        <div class="meta-row"><span class="key">Device</span><span class="val" id="metaDevice">—</span></div>
+        <div class="meta-row"><span class="key">Preset</span><span class="val" id="metaPreset">—</span></div>
+        <div class="meta-row"><span class="key">Connection</span><span class="val" id="metaPalmsens">●  Disconnected</span></div>
+      </div>
+
+      <div class="sponsor-block">
+        <div class="sponsor-label">Supported by</div>
+        <img src="{{ url_for('static', filename='img/abic_logo.png') }}"
+             alt="Advanced Biomedical Instrumentation Centre"
+             class="sponsor-img"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';" />
+        <div class="sponsor-fallback" style="display:none;">
+          Advanced Biomedical Instrumentation Centre
+          <div style="font-size:10px; color: var(--text-faint);">先進生物醫學儀器中心</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============================== WORKING AREA (70%) ================ -->
+    <main class="working">
+
+      <!-- ===== Phase 0 — Configuration ============================ -->
+      <section id="screen-0">
+        <h1>Configuration</h1>
+        <p class="subtitle">Operator, measurement device, and experiment preset.</p>
+
+        <div class="card">
+          <h3 class="card-title">Operator</h3>
+          <div class="form-grid">
+            <div class="field full">
+              <label>Operator name <span class="req">*</span></label>
+              <input id="fOperator" type="text" placeholder="Operator name" />
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">Measurement device
+            <button class="link-btn" onclick="openManageDevices()">Manage devices</button>
+          </h3>
+          <div class="form-grid">
+            <div class="field full">
+              <label>Active device</label>
+              <select id="fDevice"></select>
+              <div class="field-help" id="deviceHelp">—</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">Experiment preset
+            <button class="link-btn" onclick="openManagePresets()">Manage presets</button>
+          </h3>
+          <div class="form-grid">
+            <div class="field full">
+              <label>Active preset</label>
+              <select id="fPreset"></select>
+              <div class="field-help" id="presetHelp">—</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btnConnectDevice" onclick="connectDevice()">Connect</button>
+          <button class="btn mobile-hide-nav" id="btnStartSession" onclick="startSession()" disabled>Begin session</button>
+          <button class="btn btn-secondary" onclick="resetSession()">Reset</button>
+          <span id="sessionError" class="hidden" style="color: var(--red); font-size: 13px;"></span>
+        </div>
+      </section>
+
+      <!-- ===== Phase 1 — Sample Identification ============================ -->
+      <section id="screen-1" class="hidden">
+        <h1>Sample identification</h1>
+        <p class="subtitle">Scan the cryovial QR code.</p>
+
+        <!-- Camera-based QR card.  Hidden on mobile because iOS Safari
+             refuses camera access on plain http:// URLs.  Mobile
+             operators use Manual entry below. -->
+        <div class="card qr-scanner-card">
+          <div class="scanner-wrap">
+            <div class="qr-frame" id="qrFrame">
+              <video id="qrVideo" autoplay playsinline muted></video>
+              <div class="qr-corner tl"></div>
+              <div class="qr-corner tr"></div>
+              <div class="qr-corner bl"></div>
+              <div class="qr-corner br"></div>
+              <div class="qr-scanline"></div>
+            </div>
+            <div class="scanner-info">
+              <h3>Position the code</h3>
+              <p>Hold the cryovial 10–15 cm from the camera. The label face should fit inside the white frame. Auto-scan as soon as the code is recognised.</p>
+              <div class="pro-tip">If the QR is unreadable, use <strong>Manual entry</strong>.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mobile-only inline manual-entry form.  Replaces the QR
+             scanner card and the modal flow on phones, so the operator
+             can fill in the sample directly without an extra "Manual
+             entry" tap.  Hidden after the sample is confirmed. -->
+        <div class="card mobile-only" id="inlineManualForm">
+          <h3 class="card-title">Sample details</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>Sample ID <span class="req">*</span></label>
+              <input id="inl_manSampleId" type="text" placeholder="Sample ID" />
+            </div>
+            <div class="field">
+              <label>Donor pouch</label>
+              <input id="inl_manDonor" type="text" placeholder="Donor pouch" />
+            </div>
+            <div class="field">
+              <label>Collection date</label>
+              <input id="inl_manDate" type="date" />
+            </div>
+            <div class="field">
+              <label>Storage location</label>
+              <input id="inl_manStorage" type="text" placeholder="Freezer · Rack · Slot" />
+            </div>
+            <div class="field">
+              <label>Aliquot purpose</label>
+              <input id="inl_manAliquot" type="text" placeholder="Aliquot purpose" />
+            </div>
+            <div class="field">
+              <label>Hospital site</label>
+              <input id="inl_manHospital" type="text" />
+            </div>
+            <div class="field full">
+              <label>Notes</label>
+              <input id="inl_manNotes" type="text" placeholder="Notes" />
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn" onclick="submitManualSample('inl_')">Confirm sample</button>
+          </div>
+        </div>
+
+        <div class="card hidden" id="confirmCard">
+          <h3 class="card-title">
+            Sample identified
+            <span class="badge" id="confirmBadge">FROM LIMS</span>
+            <span class="confirm-fresh-tag" id="confirmFreshTag">Awaiting acquisition</span>
+          </h3>
+          <div class="confirm-layout">
+            <div class="confirm-data" id="confirmData"></div>
+            <div class="confirm-qr">
+              <div class="confirm-qr-label">Scanned code</div>
+              <img id="scannedQrImage" alt="Scanned QR code" class="scanned-qr-img" />
+              <div class="scanned-qr-fallback" id="scannedQrFallback"
+                   style="display:none;">QR image unavailable<br/>(manual entry)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn mobile-hide-nav" id="btnConfirmSample" onclick="goPhase(2)" disabled>Confirm sample</button>
+          <button class="btn btn-secondary mobile-hide-nav" onclick="openManualSampleEntry()">Manual entry</button>
+          <button class="btn btn-secondary" onclick="resetSampleScan()">Reset sample</button>
+        </div>
+      </section>
+
+      <!-- ===== Phase 2 — Sample Loading ====================== -->
+      <section id="screen-2" class="hidden">
+        <h1>Sample loading</h1>
+        <p class="subtitle" id="loadHint">&nbsp;</p>
+
+        <div class="load-stage">
+          <div class="load-illustration" id="loadIllustration">
+            <div class="pulse" id="loadPulse">●</div>
+            <h2 id="loadHeadline">Standing by</h2>
+            <p id="loadSubline">Initialising drop-detect circuit…</p>
+            <div class="reading">
+              Trigger
+              <div class="reading-val" id="loadStatus">STANDBY</div>
+            </div>
+          </div>
+
+          <div class="card" style="margin: 0;">
+            <h3 class="card-title">Pre-measurement checklist</h3>
+            <ul class="caution-list">
+              <li><span class="icon">⚠</span><span><strong>Polish electrode</strong> before each new sample.</span></li>
+              <li><span class="icon">⚠</span><span><strong>Inspect for air bubbles</strong> on the electrode surface.</span></li>
+              <li><span class="icon">⚠</span><span><strong>Sample volume</strong> appropriate for the active sensor.</span></li>
+              <li><span class="icon">⚠</span><span><strong>Supporting electrolyte</strong> verified.</span></li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Manual mode: explicit Start button.  Drop-detect mode: hidden,
+             the SSE stream auto-starts after the standby countdown.
+             On mobile the in-page Start button is hidden — the bottom
+             "Start →" button takes over. -->
+        <div class="btn-row" id="phase2Manual">
+          <button class="btn mobile-hide-nav" id="btnStartMeasure" onclick="startMeasurement()">Start measurement →</button>
+        </div>
+        <!-- Visible only while a measurement is in flight (drop-detect
+             standby/awaiting/settling).  Lets the operator abort without
+             waiting for a drop. -->
+        <div class="btn-row hidden" id="phase2Cancel">
+          <button class="btn btn-danger" onclick="cancelMeasurement()">Cancel measurement</button>
+        </div>
+      </section>
+
+      <!-- ===== Phase 3 — Measurement =========================== -->
+      <section id="screen-3" class="hidden">
+        <h1>Measurement</h1>
+        <p class="subtitle">Live voltammogram.</p>
+
+        <div class="card">
+          <h3 class="card-title">
+            Voltammogram
+            <span id="measureStatus" class="status-pill idle">Idle</span>
+          </h3>
+          <div id="liveChart" class="chart-wrap"></div>
+          <div class="progress-bar"><div class="fill" id="progressFill"></div></div>
+          <div class="progress-strip">
+            <span id="progressText">0 samples</span>
+            <span id="progressStatus">—</span>
+          </div>
+        </div>
+
+        <div class="btn-row" id="phase3InProgress">
+          <button class="btn btn-danger" onclick="cancelMeasurement()">Cancel measurement</button>
+        </div>
+        <div class="btn-row hidden" id="phase3Finished">
+          <button class="btn mobile-hide-nav" onclick="goPhase(4)">Continue to analysis →</button>
+          <button class="btn btn-secondary" onclick="runNextSample()">Run next sample</button>
+        </div>
+      </section>
+
+      <!-- ===== Phase 4 — Analysis =========================== -->
+      <section id="screen-4" class="hidden">
+        <h1>Analysis</h1>
+        <p class="subtitle">Concentration prediction.</p>
+
+        <!-- ============================================================
+             Section 1 — INFERENCE MODEL (run analysis controls)
+             ============================================================ -->
+        <h2 class="section-title">Inference model</h2>
+
+        <div class="card">
+          <h3 class="card-title">Active model
+            <button class="link-btn" onclick="openManageModels()">Manage models</button>
+          </h3>
+          <div class="field">
+            <label>Model</label>
+            <select id="fModel"></select>
+            <div class="field-help" id="modelHelp">—</div>
+          </div>
+
+          <div class="field" style="margin-top: 16px;">
+            <label>Samples to analyse</label>
+            <div class="inference-sample-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th class="cb-cell">
+                      <input type="checkbox" id="infSampleAll"
+                             onchange="toggleAllInferenceSamples()" checked />
+                    </th>
+                    <th>Sample</th>
+                    <th>Status</th>
+                    <th>Acquired</th>
+                    <th>—</th>
+                  </tr>
+                </thead>
+                <tbody id="infSampleBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="field" style="margin-top: 16px;">
+            <label>Cycles to analyse</label>
+            <div id="cycleCheckboxes" class="checkbox-row"></div>
+          </div>
+
+          <div class="btn-row" style="margin-top: 16px;">
+            <button class="btn" onclick="runAnalysis()">Run analysis</button>
+          </div>
+        </div>
+
+        <!-- ============================================================
+             Section 2 — OVERALL ANALYSIS (table + chart)
+             ============================================================ -->
+        <h2 class="section-title">Overall analysis</h2>
+
+        <div class="card hidden" id="comparisonCard">
+          <h3 class="card-title">Cross-sample comparison</h3>
+          <div id="comparisonTable"></div>
+
+          <div class="chart-controls">
+            <div class="chart-control-group">
+              <span class="control-label">Visualisation:</span>
+              <button class="seg-btn active" data-chart="bar"   onclick="setChartKind('bar')">Bar</button>
+              <button class="seg-btn"        data-chart="box"   onclick="setChartKind('box')">Box</button>
+              <button class="seg-btn"        data-chart="swarm" onclick="setChartKind('swarm')">Swarm</button>
+            </div>
+            <div class="chart-control-group">
+              <span class="control-label">Ion:</span>
+              <div id="ionPickerRow" class="ion-picker-row"></div>
+            </div>
+          </div>
+          <div id="ionChart" class="ion-chart-wrap hidden"></div>
+        </div>
+
+        <div class="card hidden" id="overallEmptyCard">
+          <p class="subtitle" style="margin: 0;">No analysed samples.</p>
+        </div>
+
+        <!-- ============================================================
+             Section 3 — INDIVIDUAL SAMPLE ANALYSIS (combined area)
+             ============================================================ -->
+        <h2 class="section-title">Individual sample analysis</h2>
+
+        <div class="card">
+          <div class="card-title-row">
+            <h3 class="card-title" style="margin: 0;">Acquired samples</h3>
+            <input type="text" id="indivSearch"
+                   class="search-input"
+                   placeholder="Search sample ID"
+                   oninput="renderIndividualList()" />
+          </div>
+          <div id="individualList" class="individual-list compact"></div>
+
+          <!-- Inline detail panel for the selected sample.  Always visible
+               (showing the most recently analysed sample by default), so
+               there's no hidden state. -->
+          <div id="individualDetail" class="individual-detail">
+            <div id="banner" class="banner ok hidden">All checks passed.</div>
+
+            <div class="card-inset hidden" id="predictionsCard">
+              <h4 class="card-subtitle">Predicted concentrations · <span id="predForSample">—</span></h4>
+              <div id="ionGrid" class="ion-grid"></div>
+            </div>
+
+            <div class="card-inset hidden" id="experimentInfoCard">
+              <h4 class="card-subtitle">Experiment information</h4>
+              <div id="experimentInfo" class="experiment-info-grid"></div>
+            </div>
+
+            <div class="card-inset hidden" id="featuresCard">
+              <div class="card-title-row">
+                <h4 class="card-subtitle" style="margin: 0;">Extracted features</h4>
+                <button class="link-btn" onclick="toggleFeatures()" id="featuresToggleBtn">Show features</button>
+              </div>
+              <div id="featuresTable" class="features-table hidden"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn mobile-hide-nav" onclick="goPhase(5)">Proceed to save →</button>
+          <button class="btn btn-secondary" onclick="runNextSample()">Run next sample</button>
+        </div>
+      </section>
+
+      <!-- ===== Phase 5 — Saved data (status log) ===================
+           All measurements are auto-saved to the server as they finish;
+           this page is just a status / audit view of what's in the
+           current session. -->
+      <section id="screen-5" class="hidden">
+        <h1>Saved data</h1>
+        <p class="subtitle">Auto-save status for this session.</p>
+
+        <div class="card">
+          <h3 class="card-title">Session summary</h3>
+          <div id="saveSummary" class="save-summary">
+            <div class="save-empty">No measurements yet.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">Activity log</h3>
+          <div id="saveLog" class="save-log">
+            <div class="save-empty">Nothing yet — finish a measurement first.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">Sample details</h3>
+          <div id="batchList" class="batch-list">
+            <div class="batch-empty">No acquisitions yet.</div>
+          </div>
+        </div>
+
+        <!-- Notes are still useful; auto-saved with the next measurement. -->
+        <div class="card">
+          <h3 class="card-title">Session notes (optional)</h3>
+          <div class="field full">
+            <textarea id="notesArea" rows="3" placeholder="Notes (auto-saved)"></textarea>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn" onclick="runNextSample()">Run next sample</button>
+          <button class="btn btn-secondary" onclick="cancelSession()">Done — end session</button>
+        </div>
+
+        <!-- Hidden — kept for backwards-compat with old JS that still
+             touches these IDs (no-op without a Sign-and-export button). -->
+        <input id="signName" type="hidden" />
+        <input id="signReason" type="hidden" />
+        <span id="reasonReq" class="hidden"></span>
+        <div id="saveResult" class="hidden"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============================== MOBILE BOTTOM NAV ================
+       Replaces the workflow sidebar on phones.  Hidden on desktop and
+       on tablets (the sidebar handles navigation there). -->
+  <nav class="mobile-nav" id="mobileNav" role="navigation" aria-label="Workflow">
+    <button class="mn-btn"         id="mnPrev" onclick="prevPhase()">← Back</button>
+    <div    class="mn-step"        id="mnStep">Step 1 / 6</div>
+    <button class="mn-btn primary" id="mnNext" onclick="nextPhase()">Next →</button>
+  </nav>
+</div>
+
+<!-- ====================================================================
+     MODALS
+     ==================================================================== -->
+
+<!-- Manage devices -->
+<div class="modal-backdrop hidden" id="modalDevices">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Measurement devices</h2>
+      <button class="modal-close" onclick="closeModal('modalDevices')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="devicesList" class="manage-list"></div>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:8px;">
+        Click a device to edit.
+      </p>
+      <hr/>
+      <h3 class="card-title" id="deviceFormTitle">Add new device</h3>
+
+      <!-- Section A: physical device identification -->
+      <div class="manage-section-label">Device</div>
+      <div class="form-grid">
+        <div class="field">
+          <label>Device name <span class="req">*</span></label>
+          <input id="newDeviceName" type="text" placeholder="Device name" />
+        </div>
+        <div class="field">
+          <label>Device ID <span class="req">*</span></label>
+          <input id="newDeviceId" type="text" placeholder="Device ID" />
+        </div>
+        <div class="field full">
+          <label>Model</label>
+          <input id="newDeviceModel" type="text" value="EmStat4T" />
+        </div>
+      </div>
+
+      <!-- Section B: how to talk to it -->
+      <div class="manage-section-label" style="margin-top: 18px;">Connection</div>
+      <div class="form-grid">
+        <div class="field full">
+          <label>Connection type</label>
+          <select id="newDeviceConnType" onchange="onDeviceConnTypeChange()">
+            <option value="usb_auto">USB</option>
+            <option value="ble">Bluetooth (BLE)</option>
+            <option value="bluetooth">Bluetooth (Classic)</option>
+            <option value="manual">Manual</option>
+          </select>
+        </div>
+        <div class="field full" id="newDevicePortHintWrap">
+          <label id="newDevicePortHintLabel">Port (optional)</label>
+          <input id="newDevicePort" type="text" placeholder="auto-detect" />
+        </div>
+      </div>
+
+      <div class="form-grid" style="margin-top: 12px;">
+        <div class="field full">
+          <label class="checkbox-label">
+            <input id="newDeviceDefault" type="checkbox" /> Set as default
+          </label>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn" id="btnAddDevice" onclick="addDevice()">Add device</button>
+        <button class="btn btn-secondary" onclick="clearDeviceForm()">Clear form</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalDevices')">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Manage presets -->
+<div class="modal-backdrop hidden" id="modalPresets">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Experiment presets</h2>
+      <button class="modal-close" onclick="closeModal('modalPresets')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="presetsList" class="manage-list"></div>
+      <p style="font-size:12px;color:var(--text-muted);margin-top:8px;">
+        Click a preset to edit.
+      </p>
+      <hr/>
+      <h3 class="card-title" id="presetFormTitle">Add new preset</h3>
+      <div class="form-grid">
+        <div class="field full">
+          <label>Preset name <span class="req">*</span></label>
+          <input id="newPresetName" type="text" placeholder="Preset name" />
+        </div>
+        <div class="field">
+          <label>Trigger mode</label>
+          <select id="newPresetTrigger" onchange="onPresetTriggerChange()">
+            <option value="drop_detect">Drop-detect</option>
+            <option value="manual">Manual</option>
+          </select>
+        </div>
+        <div class="field" id="presetDropMethodWrap">
+          <label>Drop-detect method</label>
+          <select id="newPresetDropMethod" onchange="onPresetDropMethodChange()">
+            <option value="voltage">OCP</option>
+            <option value="gpio">GPIO</option>
+          </select>
+        </div>
+        <div class="field" id="presetVoltageThresholdWrap">
+          <label>Voltage change threshold (mV)</label>
+          <input id="newPresetVoltageThreshold" type="number" value="30" min="1" />
+        </div>
+        <div class="field">
+          <label>Number of cycles (n_scans)</label>
+          <input id="newPresetN" type="number" value="3" min="1" />
+        </div>
+        <div class="field">
+          <label>Start countdown (s)</label>
+          <input id="newPresetStartCountdown" type="number" value="0" min="0" />
+        </div>
+        <div class="field">
+          <label>Post-drop settle (s)</label>
+          <input id="newPresetPostDropSettle" type="number" value="0" min="0" />
+        </div>
+        <div class="field">
+          <label>Scan rate (V/s)</label>
+          <input id="newPresetScanRate" type="number" step="0.01" value="0.1" />
+        </div>
+        <div class="field">
+          <label>E begin (V)</label>
+          <input id="newPresetEBegin" type="number" step="0.01" value="0.0" />
+        </div>
+        <div class="field">
+          <label>E vertex 1 (V)</label>
+          <input id="newPresetEv1" type="number" step="0.01" value="0.5" />
+        </div>
+        <div class="field">
+          <label>E vertex 2 (V)</label>
+          <input id="newPresetEv2" type="number" step="0.01" value="-0.5" />
+        </div>
+        <div class="field">
+          <label>E step (V)</label>
+          <input id="newPresetStep" type="number" step="0.001" value="0.01" />
+        </div>
+        <div class="field">
+          <label>Pretreat duration (s)</label>
+          <input id="newPresetPretreatS" type="number" step="0.5" value="3.0" />
+        </div>
+        <div class="field full">
+          <label>Select current range(s)</label>
+          <div class="range-picker" id="newPresetRangePicker">
+            <button type="button" class="range-btn" data-range="1n"   onclick="clickRangeBtn('1n')"><span class="r-num">1</span><span class="r-unit">nA</span></button>
+            <button type="button" class="range-btn" data-range="10n"  onclick="clickRangeBtn('10n')"><span class="r-num">10</span><span class="r-unit">nA</span></button>
+            <button type="button" class="range-btn" data-range="100n" onclick="clickRangeBtn('100n')"><span class="r-num">100</span><span class="r-unit">nA</span></button>
+            <button type="button" class="range-btn" data-range="1u"   onclick="clickRangeBtn('1u')"><span class="r-num">1</span><span class="r-unit">µA</span></button>
+            <button type="button" class="range-btn" data-range="10u"  onclick="clickRangeBtn('10u')"><span class="r-num">10</span><span class="r-unit">µA</span></button>
+            <button type="button" class="range-btn" data-range="100u" onclick="clickRangeBtn('100u')"><span class="r-num">100</span><span class="r-unit">µA</span></button>
+            <button type="button" class="range-btn" data-range="1m"   onclick="clickRangeBtn('1m')"><span class="r-num">1</span><span class="r-unit">mA</span></button>
+            <button type="button" class="range-btn" data-range="10m"  onclick="clickRangeBtn('10m')"><span class="r-num">10</span><span class="r-unit">mA</span></button>
+          </div>
+          <!-- Hidden input kept so legacy server-side parsing of newPresetRange still works -->
+          <input id="newPresetRange" type="hidden" value="100u" />
+          <div class="field-help">
+            Click an empty range to add it.  Click a selected range to mark
+            it as the <strong>start range (▼)</strong>.  Click the start
+            range to remove it from the autorange set.
+          </div>
+        </div>
+        <div class="field full">
+          <label class="checkbox-label">
+            <input id="newPresetDefault" type="checkbox" /> Set as default
+          </label>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="btnAddPreset" onclick="addPreset()">Add preset</button>
+        <button class="btn btn-secondary" onclick="clearPresetForm()">Clear form</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalPresets')">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Cancel session confirm dialog (non-blocking, works mid-SSE) -->
+<div class="modal-backdrop hidden" id="modalCancelConfirm">
+  <div class="modal" style="max-width: 460px;">
+    <div class="modal-header">
+      <h2 style="color: var(--red);">Cancel session?</h2>
+    </div>
+    <div class="modal-body">
+      <p style="color: var(--text-body); font-size: 13.5px;">
+        Acquired samples and analysis results in this session will be
+        discarded. Operator, device, and preset are preserved.
+      </p>
+      <p style="color: var(--text-muted); font-size: 12.5px;">
+        Any in-flight measurement is aborted.
+      </p>
+      <div class="btn-row">
+        <button class="btn btn-danger" onclick="confirmCancelSession()">Cancel session</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalCancelConfirm')">Keep session</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Connecting / connection-test progress -->
+<div class="modal-backdrop hidden" id="modalConnect">
+  <div class="modal connect-modal" id="connectModalCard" style="max-width: 480px;">
+    <div class="modal-body" style="text-align: center; padding: 32px 28px;">
+      <div class="connect-spinner" id="connectSpinner"></div>
+      <h2 id="connectModalTitle" style="margin: 16px 0 8px 0; color: var(--text-dark); font-size: 18px;">
+        Connecting to device…
+      </h2>
+      <p id="connectModalBody" style="color: var(--text-muted); font-size: 13.5px;
+                                       white-space: pre-line; margin: 0;"></p>
+      <button id="connectModalClose" class="btn btn-secondary hidden"
+              style="margin-top: 20px;"
+              onclick="hideConnectModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Device-not-connected dialog -->
+<div class="modal-backdrop hidden" id="modalNoDevice">
+  <div class="modal" style="max-width: 480px;">
+    <div class="modal-header">
+      <h2 style="color: var(--red);">Device not detected</h2>
+      <button class="modal-close" onclick="closeModal('modalNoDevice')">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="color: var(--text-body);">
+        The application could not detect a PalmSens potentiostat on the USB port.
+        Please verify the following before continuing:
+      </p>
+      <ul style="color: var(--text-body); font-size: 13.5px; line-height: 1.7;">
+        <li>The EmStat4T is powered on and connected to this machine via USB.</li>
+        <li>No other application (PSTrace, MultiTrace) is holding the serial port.</li>
+        <li>The USB cable supports data transfer (some are charge-only).</li>
+      </ul>
+      <p style="color: var(--text-muted); font-size: 12.5px;">
+        Once the device is detected, the sidebar indicator turns green and you can begin measurement.
+      </p>
+      <div class="btn-row">
+        <button class="btn" onclick="retryPalmsens()">Retry</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalNoDevice')">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Manual sample entry -->
+<div class="modal-backdrop hidden" id="modalManualSample">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Manual sample entry</h2>
+      <button class="modal-close" onclick="closeModal('modalManualSample')">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="color: var(--text-muted); font-size: 13px;">
+        Tagged <strong>MANUAL</strong> in the audit log.
+      </p>
+      <div class="form-grid">
+        <div class="field">
+          <label>Sample ID <span class="req">*</span></label>
+          <input id="manSampleId" type="text" placeholder="Sample ID" />
+        </div>
+        <div class="field">
+          <label>Donor pouch</label>
+          <input id="manDonor" type="text" placeholder="Donor pouch" />
+        </div>
+        <div class="field">
+          <label>Collection date</label>
+          <input id="manDate" type="date" />
+        </div>
+        <div class="field">
+          <label>Storage location</label>
+          <input id="manStorage" type="text" placeholder="Freezer · Rack · Slot" />
+        </div>
+        <div class="field">
+          <label>Aliquot purpose</label>
+          <input id="manAliquot" type="text" placeholder="Aliquot purpose" />
+        </div>
+        <div class="field">
+          <label>Hospital site</label>
+          <input id="manHospital" type="text" />
+        </div>
+        <div class="field full">
+          <label>Notes</label>
+          <input id="manNotes" type="text" placeholder="Notes" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="submitManualSample()">Confirm</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalManualSample')">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Manage models -->
+<div class="modal-backdrop hidden" id="modalModels">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>AI models &amp; regression equations</h2>
+      <button class="modal-close" onclick="closeModal('modalModels')">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="modelsList" class="manage-list"></div>
+      <hr/>
+      <h3 class="card-title">Register new model</h3>
+      <p style="color: var(--text-muted); font-size: 13px;">
+        Absolute path to a <code>.pt</code>, <code>.pkl</code>, or <code>.joblib</code> file.
+      </p>
+      <div class="form-grid">
+        <div class="field full">
+          <label>Model name <span class="req">*</span></label>
+          <input id="newModelName" type="text" placeholder="Model name" />
+        </div>
+        <div class="field full">
+          <label>Absolute path to model file <span class="req">*</span></label>
+          <input id="newModelPath" type="text" placeholder="/abs/path/to/model.pt" />
+        </div>
+        <div class="field full">
+          <label>Notes</label>
+          <input id="newModelNotes" type="text" placeholder="Notes" />
+        </div>
+        <div class="field full">
+          <label class="checkbox-label">
+            <input id="newModelDefault" type="checkbox" /> Set as default
+          </label>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="addModel()">Register model</button>
+        <button class="btn btn-secondary" onclick="closeModal('modalModels')">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Help panel -->
+<aside class="help-panel" id="helpPanel">
+  <h2>User guide</h2>
+  <p style="color: var(--text-muted); font-size: 13px;">Six phases per sample.</p>
+  <ol>
+    <li><strong>Configuration</strong> — operator, device, preset</li>
+    <li><strong>Sample identification</strong> — scan QR</li>
+    <li><strong>Sample loading</strong> — place the sample</li>
+    <li><strong>Measurement</strong> — wait for CV to complete</li>
+    <li><strong>Analysis</strong> — review predictions</li>
+    <li><strong>Save data</strong> — sign and export</li>
+  </ol>
+  <h2 style="margin-top: 24px;">Pre-measurement cautions</h2>
+  <ul>
+    <li>Polish the working electrode before each sample.</li>
+    <li>Verify no air bubbles on the electrode surface.</li>
+    <li>If primary model and linear baseline disagree by &gt; 30%, an override justification is required.</li>
+    <li>Manual overrides are recorded in the audit log.</li>
+    <li>Allow camera access on first launch.</li>
+  </ul>
+  <div class="btn-row" style="margin-top: 24px;">
+    <button class="btn btn-secondary" onclick="toggleHelp()">Close</button>
+  </div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

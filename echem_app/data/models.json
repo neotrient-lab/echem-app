@@ -1,0 +1,138 @@
+{
+  "items": [
+    {
+      "id": "model_linear_v0",
+      "name": "Linear regression (built-in baseline)",
+      "kind": "linear",
+      "path": "",
+      "version": "linear-v0",
+      "ions": [
+        {
+          "symbol": "Cu",
+          "name": "Copper",
+          "lod_mg_l": 0.03
+        },
+        {
+          "symbol": "Pb",
+          "name": "Lead",
+          "lod_mg_l": 0.0001
+        },
+        {
+          "symbol": "Cd",
+          "name": "Cadmium",
+          "lod_mg_l": 5e-05
+        },
+        {
+          "symbol": "Zn",
+          "name": "Zinc",
+          "lod_mg_l": 0.15
+        },
+        {
+          "symbol": "Fe",
+          "name": "Iron",
+          "lod_mg_l": 0.04
+        },
+        {
+          "symbol": "Hg",
+          "name": "Mercury",
+          "lod_mg_l": 1e-05
+        }
+      ],
+      "linear_coefficients": {
+        "Cu": [
+          0.42,
+          1000000.0
+        ],
+        "Pb": [
+          0.005,
+          8000000.0
+        ],
+        "Cd": [
+          0.002,
+          6000000.0
+        ],
+        "Zn": [
+          2.5,
+          3000000.0
+        ],
+        "Fe": [
+          0.7,
+          2000000.0
+        ],
+        "Hg": [
+          0.0003,
+          10000000.0
+        ]
+      },
+      "notes": "Built-in linear baseline using anodic peak current as predictor."
+    },
+    {
+      "name": "ResAttn v3.2",
+      "kind": "torch",
+      "path": "/tmp/does_not_exist.pt",
+      "version": "v0",
+      "ions": [
+        {
+          "symbol": "Cu",
+          "name": "Copper",
+          "lod_mg_l": 0.03
+        },
+        {
+          "symbol": "Pb",
+          "name": "Lead",
+          "lod_mg_l": 0.0001
+        },
+        {
+          "symbol": "Cd",
+          "name": "Cadmium",
+          "lod_mg_l": 5e-05
+        },
+        {
+          "symbol": "Zn",
+          "name": "Zinc",
+          "lod_mg_l": 0.15
+        },
+        {
+          "symbol": "Fe",
+          "name": "Iron",
+          "lod_mg_l": 0.04
+        },
+        {
+          "symbol": "Hg",
+          "name": "Mercury",
+          "lod_mg_l": 1e-05
+        }
+      ],
+      "notes": "",
+      "id": "model_b05017e8",
+      "created_at": "2026-04-27T05:59:41+0000",
+      "linear_coefficients": {
+        "Cu": [
+          0.42,
+          1000000.0
+        ],
+        "Pb": [
+          0.005,
+          8000000.0
+        ],
+        "Cd": [
+          0.002,
+          6000000.0
+        ],
+        "Zn": [
+          2.5,
+          3000000.0
+        ],
+        "Fe": [
+          0.7,
+          2000000.0
+        ],
+        "Hg": [
+          0.0003,
+          10000000.0
+        ]
+      }
+    }
+  ],
+  "default_id": "model_linear_v0"
+}

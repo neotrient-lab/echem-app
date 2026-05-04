@@ -1,0 +1,91 @@
+name: Build installers
+
+# Runs on every tag matching v* (e.g. v0.6.4) and on manual dispatch.
+# Produces a one-file Windows .exe and a macOS .app, attaching both to
+# a GitHub Release named after the tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: Neotrient-Echem-Windows
+            ext: .exe
+          - os: macos-latest
+            artifact_name: Neotrient-Echem-macOS
+            ext: .app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r echem_app/requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller build/echem-desktop.spec --noconfirm --clean
+
+      - name: Zip the macOS .app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cd dist
+          zip -r Neotrient-Echem-macOS.zip Neotrient-Echem.app
+
+      - name: Rename Windows .exe for clarity
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mv "dist/Neotrient-Echem.exe" "dist/Neotrient-Echem-Windows.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/Neotrient-Echem-Windows.exe
+            dist/Neotrient-Echem-macOS.zip
+          if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Show what we built
+        run: ls -la artifacts/**/*
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/Neotrient-Echem-Windows/Neotrient-Echem-Windows.exe
+            artifacts/Neotrient-Echem-macOS/Neotrient-Echem-macOS.zip
+          generate_release_notes: true
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}

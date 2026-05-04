@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "id": "device_default",
+      "name": "EmStat4T",
+      "device_id": "ES4T-01",
+      "model": "EmStat4T",
+      "port_hint": "",
+      "notes": "",
+      "connection_type": "usb_auto",
+      "baudrate": 0,
+      "set_default": true
+    },
+    {
+      "id": "device_ps539b",
+      "name": "PS-539B (BLE)",
+      "device_id": "PS-539B",
+      "model": "EmStat4T",
+      "connection_type": "ble",
+      "port_hint": "6c:1d:eb:0b:53:9b",
+      "baudrate": 0,
+      "notes": "",
+      "set_default": false,
+      "created_at": "2026-04-28T00:00:00+0000"
+    }
+  ],
+  "default_id": "device_default"
+}
