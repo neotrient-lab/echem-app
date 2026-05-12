@@ -208,26 +208,50 @@ the app at `http://127.0.0.1:8080`.
 
 ## Step 6 — Use the app
 
-The app is a 6-phase wizard along the top of the screen.
-The basic flow is:
+The app is a wizard along the left side of the screen.  In **v0.2.0**
+the workflow can take two shapes:
 
-1. **Phase 0 — Connect.** Pick your device from the dropdown
-   (USB or BLE) and pick a measurement preset. Click **Connect**,
-   then **Begin session**.
-2. **Phase 1 — Sample.** Enter or scan the sample ID. On a phone /
-   tablet you can fill the form by hand.
-3. **Phase 2 — Drop.** Add your liquid drop to the electrode. The
-   app waits for the drop, then runs the CV automatically (or wait
-   for the manual trigger if you chose a manual preset).
-4. **Phase 3 — Measure.** The CV runs. You see the live current
-   curve as it sweeps.
-5. **Phase 4 — Result.** AI inference (if a model is loaded) and a
-   summary table.
-6. **Phase 5 — Save.** Measurements are auto-saved. Add notes if
-   you want, then **Done** to start the next sample.
+**Single mode (6 phases)** — one sample at a time.  Same flow as
+v0.1.x:
+
+1. **Configuration** — Operator, Device, Preset, Sample category
+   (Clinical sample / Standard solution), Run mode (Single).
+2. **Sample Identification** — Scan QR or use Manual entry, then
+   click **Confirm sample**.
+3. **Sample Loading** — Drop the sample onto the electrode (or click
+   manual-trigger Start, depending on the preset).
+4. **Measurement** — Live voltammogram.  CV shows per-cycle traces;
+   SWV shows three traces (forward / reverse / difference).
+5. **Analysis** — AI inference (if a model is loaded) + per-sample
+   feature table.
+6. **Finalize** — Operator sign-off + export bundle.
+
+**Sequence mode (7 phases)** — plan a batch of samples then run
+them in order.  Adds one phase up front:
+
+1. **Configuration** — Same as Single, but pick *Run mode = Sequence*.
+2. **Create Sequence** — Build one or more batches, each with a
+   method preset.  Fill sample info for every sample.  Click
+   **Confirm** to start the run.
+3. **Sample Identification** — Verify sample 1's info that was
+   pre-loaded from the batch.
+4. **Sample Loading** — Drop sample 1.
+5. **Measurement** — Measure sample 1.
+6. **Analysis** — Review (or skip).
+7. **Finalize** — Either click **Run next sample** to loop back to
+   step 3 for sample 2, or click **End sequence** on the last sample
+   to skip remaining samples and finalize the session.
+
+For detailed workflow recipes (CV vs SWV runs, building a sequence
+plan, switching presets per batch, recovering from a failed
+measurement), see **USAGE.md** in the same folder.
+
+> **Tip:** the workflow sidebar shows your current step in purple.
+> Past steps go green; future steps stay grey until you reach them.
+> Click any **green** step to revisit it; future steps are locked.
 
 You can also browse all past measurements on the **Analysis**
-page (link in the top bar).
+page.
 
 ---
 

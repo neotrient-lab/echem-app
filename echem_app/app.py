@@ -40,7 +40,8 @@ from .connection import resolve_device_connection, status_default_device
 from .exporter import build_export_bundle
 from .lims_client import post_to_lims
 from .measurement import (
-    MeasurementOptions, cv_params_from_preset, date_subfolder,
+    MeasurementOptions, cv_params_from_preset, swv_params_from_preset,
+    params_from_preset, date_subfolder,
     iter_measurement,
 )
 
@@ -119,6 +120,13 @@ class SessionState:
     preset_record_id: str = ""
     preset_name: str = ""
     preset: Optional[Dict[str, Any]] = None
+    # v0.2.0: which Sample Identification form variant Phase 1 should
+    # render.  "clinical" = the v0.1.15 hospital fields (Sample ID,
+    # Donor pouch, Collection date, Storage location, Aliquot purpose,
+    # Clinical site, Notes).  "standard" = calibration / standard-
+    # solution fields (Solution name, Concentration, Prep date, Lot,
+    # Solvent, Notes).
+    sample_id_preset: str = "clinical"
     started_at: Optional[str] = None
     # Currently identified sample (the one Phase 1 just scanned).
     sample_id: Optional[str] = None
@@ -201,7 +209,7 @@ _FAKE_SAMPLES = {
         "collection_date": "2026-04-18",
         "storage_location": "Freezer A · Rack 3 · Slot B7",
         "aliquot_purpose": "Echem (Vial 2 of 3)",
-        "hospital_site": "Suzhou Maternity #2",
+        "clinical_site": "Suzhou Maternity #2",
         "from": "LIMS",
     },
     "DP-0002-V1": {
@@ -210,7 +218,7 @@ _FAKE_SAMPLES = {
         "collection_date": "2026-04-19",
         "storage_location": "Freezer A · Rack 3 · Slot B8",
         "aliquot_purpose": "Echem (Vial 1 of 3)",
-        "hospital_site": "Suzhou Maternity #2",
+        "clinical_site": "Suzhou Maternity #2",
         "from": "LIMS",
     },
 }
@@ -248,6 +256,20 @@ def _add_no_cache_headers(response):
 def index():
     from . import __version__
     return render_template("index.html", app_version=__version__)
+
+
+@app.get("/sequence")
+def sequence_page():
+    """v0.2.0 Sequence builder.
+
+    Sequence is now embedded as a phase inside the main SPA (index.html)
+    rather than living at its own route — operators reach it by picking
+    "Sequence" run mode in Configuration and pressing Begin session.
+    This route exists only as a back-compat redirect for any cached
+    bookmark from the early v0.2.0 build.
+    """
+    from flask import redirect
+    return redirect("/", code=302)
 
 
 @app.get("/server")
@@ -403,6 +425,26 @@ def api_presets_default(pid):
 
 @app.delete("/api/presets/<pid>")
 def api_presets_delete(pid):
+    """Delete a preset record.
+
+    v0.2.0: presets flagged with ``protected: true`` (the team-supplied
+    originals like preset-1, preset-swv-1, Dummy cell test) require the
+    admin password to delete — same pattern as default-device deletion.
+    Operators can still delete their own presets without a password.
+    """
+    DEFAULT_DELETE_PASSWORD = "NEO-001"
+    rec = config_store.presets().get(pid)
+    if rec and rec.get("protected"):
+        body = request.get_json(force=True, silent=True) or {}
+        supplied = (body.get("password")
+                    or request.headers.get("X-Delete-Password")
+                    or "")
+        if supplied != DEFAULT_DELETE_PASSWORD:
+            return jsonify({
+                "ok": False,
+                "needs_password": True,
+                "error": "Password required to delete this protected preset.",
+            }), 403
     return jsonify({"ok": config_store.presets().delete(pid)})
 
 
@@ -501,6 +543,24 @@ def api_models_default(mid):
 
 @app.delete("/api/models/<mid>")
 def api_models_delete(mid):
+    """Delete a model record.
+
+    v0.2.0: models flagged with ``protected: true`` require the admin
+    password to delete (same NEO-001 pattern as protected presets and
+    default devices)."""
+    DEFAULT_DELETE_PASSWORD = "NEO-001"
+    rec = config_store.models().get(mid)
+    if rec and rec.get("protected"):
+        body = request.get_json(force=True, silent=True) or {}
+        supplied = (body.get("password")
+                    or request.headers.get("X-Delete-Password")
+                    or "")
+        if supplied != DEFAULT_DELETE_PASSWORD:
+            return jsonify({
+                "ok": False,
+                "needs_password": True,
+                "error": "Password required to delete this protected model.",
+            }), 403
     return jsonify({"ok": config_store.models().delete(mid)})
 
 
@@ -580,6 +640,12 @@ def api_session_start():
     operator = (body.get("operator") or "").strip()
     device_id = body.get("device_id") or ""
     preset_id = body.get("preset_id") or ""
+    # v0.2.0: which Sample Identification form variant should Phase 1
+    # render — "clinical" or "standard".  Defaults to clinical (the
+    # v0.1.15 layout) so older clients get the previous behaviour.
+    sample_id_preset = (body.get("sample_id_preset") or "clinical").strip().lower()
+    if sample_id_preset not in {"clinical", "standard"}:
+        sample_id_preset = "clinical"
 
     device = (config_store.devices().get(device_id)
               or config_store.devices().get_default())
@@ -601,6 +667,7 @@ def api_session_start():
         _STATE.preset_record_id = preset["id"]
         _STATE.preset_name = preset.get("name", "")
         _STATE.preset = preset
+        _STATE.sample_id_preset = sample_id_preset
         _STATE.started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         _STATE.audit = AuditLog(
             log_path=date_subfolder(EXPORTS_ROOT) / "audit.log",
@@ -616,6 +683,7 @@ def api_session_start():
         "operator": operator,
         "device": device,
         "preset": preset,
+        "sample_id_preset": sample_id_preset,
         "palmsens": _palmsens_status(),
     })
 
@@ -632,16 +700,42 @@ def api_sample_manual():
     sample_id = (body.get("sample_id") or "").strip()
     if not sample_id:
         return jsonify({"ok": False, "error": "sample_id required"}), 400
+    # v0.2.0: two sample-identification form variants share this
+    # endpoint.  The frontend sends `sample_id_preset` to disambiguate;
+    # if it's "standard", we capture solution-specific fields, otherwise
+    # the v0.1.15 clinical fields.  All fields are stored loosely so the
+    # downstream save layer is agnostic.
+    variant = (body.get("sample_id_preset") or "clinical").strip().lower()
+    if variant not in {"clinical", "standard"}:
+        variant = "clinical"
+
     meta = {
         "sample_id": sample_id,
-        "donor_pouch": body.get("donor_pouch", ""),
-        "collection_date": body.get("collection_date", ""),
-        "storage_location": body.get("storage_location", ""),
-        "aliquot_purpose": body.get("aliquot_purpose", ""),
-        "hospital_site": body.get("hospital_site", ""),
+        "sample_id_preset": variant,
         "notes": body.get("notes", ""),
         "from": "MANUAL",
     }
+    if variant == "standard":
+        meta.update({
+            # v0.2.x round 8: form now sends sample_type (Standard /
+            # Blank / Sample / QC) instead of the old free-text
+            # solution_name.  Accept either for back-compat with any
+            # already-saved meta sent by older clients.
+            "sample_type":         body.get("sample_type") or body.get("solution_name", ""),
+            "concentration_value": body.get("concentration_value", ""),
+            "concentration_unit":  body.get("concentration_unit", ""),
+            "prep_date":           body.get("prep_date", ""),
+            "lot":                 body.get("lot", ""),
+            "solvent":             body.get("solvent", ""),
+        })
+    else:
+        meta.update({
+            "donor_pouch":      body.get("donor_pouch", ""),
+            "collection_date":  body.get("collection_date", ""),
+            "storage_location": body.get("storage_location", ""),
+            "aliquot_purpose":  body.get("aliquot_purpose", ""),
+            "clinical_site":    body.get("clinical_site") or body.get("hospital_site", ""),
+        })
     with _STATE_LOCK:
         _STATE.sample_id = sample_id
         _STATE.sample_meta = meta
@@ -689,7 +783,10 @@ def api_measure_start():
 
     with _STATE_LOCK:
         preset = _STATE.preset or config_store.presets().get_default() or {}
-        params = cv_params_from_preset(preset)
+        # v0.2.0: dispatch by technique (CV → CVParameters, SWV → SWVParameters).
+        # Both end up wrapped by MeasurementOptions which builds the right
+        # script downstream.
+        technique, params = params_from_preset(preset)
         trigger_mode = (preset or {}).get("trigger_mode", "drop_detect")
         if force_manual:
             trigger_mode = "manual"

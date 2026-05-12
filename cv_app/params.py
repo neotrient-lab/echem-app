@@ -135,14 +135,24 @@ class SWVParameters:
     # Optional reverse sweep (set False for a single forward SWV)
     do_reverse_sweep: bool = False
 
-    # Equilibration / pretreatment
+    # Deposition step (held at e_dep for t_dep before equilibration; useful
+    # for accumulating analyte at the electrode before the SWV sweep).
+    # Set t_dep = 0 to skip the deposition entirely.
+    e_dep: float = 0.0
+    t_dep: float = 0.0
+
+    # Equilibration / pretreatment (chronoamperometry hold at
+    # `pretreat_potential_v` for `pretreat_duration_s`, sampling every
+    # `pretreat_interval_s`).  Default potential = e_begin if None.
     pretreat_potential_v: Optional[float] = None  # default = e_begin
     pretreat_duration_s: float = 2.0
     pretreat_interval_s: float = 0.1
 
     # Hardware configuration
     pgstat_mode: int = 2
-    max_bandwidth_hz: int = 40
+    max_bandwidth_hz: float = 40.0  # float to support sub-Hz values
+                                    # (PSTrace auto-pick is 292.527 Hz for SWV)
+    acquisition_frac_autoadjust: Optional[int] = None  # PSTrace emits 50
     current_range: str = "100u"
     auto_range_low: str = "1n"
     auto_range_high: str = "100u"
@@ -151,6 +161,9 @@ class SWVParameters:
     # Output potential range hint
     e_range_min: float = -0.3
     e_range_max: float = 0.4
+
+    # Optional: hold the cell on briefly before pretreatment
+    cell_on_settle_s: float = 0.0
 
     notes: str = ""
 

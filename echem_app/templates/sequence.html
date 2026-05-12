@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Neotrient · Sequence</title>
+
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Neotrient" />
+<meta name="theme-color" content="#5258BF" />
+<link rel="apple-touch-icon"
+      href="{{ url_for('static', filename='img/neotrient_logo.png') }}" />
+<link rel="icon" type="image/png"
+      href="{{ url_for('static', filename='img/neotrient_logo.png') }}" />
+
+<!-- Share the main app's stylesheet so the Sequence page matches the
+     Configuration / single-mode wizard byte-for-byte. -->
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+
+<style>
+/* Sequence-page-specific overrides.  Everything that's NOT specific to
+   this page lives in style.css with the rest of the app. */
+
+/* The Sequence workflow currently has only 3 steps.  Mark steps 4-6
+   inactive by hiding them — kept here as commented-out scaffolding for
+   when Run / Save phases land in the Sequence flow. */
+
+/* Build view structure */
+.seq-create-card { /* "Create new batch" — uses existing .card */ }
+
+.batch-card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+.batch-head {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--card-border);
+  background: linear-gradient(135deg, #F8F9FD 0%, #F2F4FB 100%);
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.batch-head .meta {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.batch-id {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 16px; font-weight: 700;
+  color: var(--text-dark);
+  background: var(--card);
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--card-border);
+}
+.batch-prefix {
+  font-size: 13px; color: var(--text-body);
+}
+.batch-prefix b {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--indigo);
+}
+.batch-preset {
+  font-size: 12px;
+  background: var(--indigo-light);
+  color: var(--indigo);
+  padding: 4px 10px;
+  border-radius: 100px;
+  font-weight: 600;
+}
+.batch-actions { display: flex; gap: 8px; }
+
+.trigger-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600;
+  padding: 5px 11px;
+  border-radius: 100px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.trigger-badge.manual { background: var(--indigo-light); color: var(--indigo); }
+.trigger-badge.drop   { background: var(--green-bg);    color: var(--green); }
+.trigger-badge .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor;
+}
+
+/* Sequence table */
+.seq-wrap { padding: 6px 10px 14px; }
+.seq-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.seq-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--card-border);
+}
+.seq-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #F2F4F8;
+  vertical-align: middle;
+}
+.seq-table tr:last-child td { border-bottom: none; }
+.row-num {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 11px;
+  width: 32px; text-align: right;
+}
+.sample-name-cell {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--text-dark);
+  font-weight: 600;
+}
+.col-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.row-empty .col-meta { color: var(--text-faint); }
+
+.row-actions { display: flex; gap: 4px; white-space: nowrap; justify-content: flex-end; }
+.icon-btn {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-muted);
+  transition: all 0.12s;
+  font-family: inherit;
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--indigo-light); color: var(--indigo);
+}
+.icon-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.icon-btn.danger:hover:not(:disabled) {
+  background: var(--red-bg); color: var(--red);
+}
+
+.empty-table {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 18px 0;
+  font-style: italic;
+}
+
+.batch-foot {
+  padding: 10px 18px 14px;
+  display: flex; gap: 8px; flex-wrap: wrap;
+  border-top: 1px solid #F2F4F8;
+}
+
+.next-bar {
+  display: flex; justify-content: flex-end;
+  margin-top: 24px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Sample-info modal */
+.modal-back {
+  position: fixed; inset: 0;
+  background: rgba(26,31,54,0.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+  padding: 16px;
+}
+.modal-back.hidden { display: none; }
+.modal-shell {
+  background: var(--card);
+  border-radius: 14px;
+  width: 100%;
+  max-width: 540px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 16px 56px rgba(26,31,54,0.25);
+  border: 1px solid var(--card-border);
+}
+.modal-shell-head {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--card-border);
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+}
+.modal-shell-head .title-block .label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.modal-shell-head .title-block .name {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 17px; font-weight: 700; color: var(--text-dark);
+  margin-top: 2px;
+}
+.modal-shell-body { padding: 18px 20px; }
+.modal-shell-foot {
+  padding: 14px 20px;
+  border-top: 1px solid var(--card-border);
+  display: flex; gap: 10px; justify-content: flex-end;
+  background: #FAFBFD;
+  border-radius: 0 0 14px 14px;
+}
+
+.unit-input { display: flex; gap: 6px; }
+.unit-input input { flex: 1; }
+.unit-input select { flex: 0 0 90px; }
+
+/* Review-page tables */
+.review-batch {
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: var(--card-shadow);
+  margin-bottom: 18px;
+  padding: 16px 20px;
+}
+.review-batch h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--text-dark);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.review-batch .meta-line {
+  font-size: 12px; color: var(--text-muted);
+  margin-bottom: 12px;
+}
+.review-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.review-table th, .review-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #F2F4F8;
+}
+.review-table th {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--text-muted);
+}
+.review-table td { color: var(--text-body); }
+.review-table .name { font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--text-dark); font-weight: 600; }
+.review-empty {
+  text-align: center; padding: 30px 0;
+  color: var(--text-muted); font-size: 13px;
+}
+
+/* Local "Sequence" sidebar — small overrides for the workflow list */
+.phases.seq-phases .phase {
+  cursor: default;
+}
+.phases.seq-phases .phase[data-clickable="true"] {
+  cursor: pointer;
+}
+
+/* Field grid for the modal */
+.field-grid { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
+.field-grid > .full { grid-column: 1 / -1; }
+@media (max-width: 540px) { .field-grid { grid-template-columns: 1fr; } }
+
+/* Mobile tweaks */
+@media (max-width: 640px) {
+  .seq-table th, .seq-table td { padding: 6px 6px; }
+  .seq-table .col-date,
+  .seq-table .col-method { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <header class="header">
+    <div class="header-left">
+      <div class="header-title">NEOTRIENT · ELECTROCHEMICAL ANALYSIS</div>
+    </div>
+    <div class="header-right">
+      <button class="header-action danger"
+              onclick="window.location.href='/'"
+              title="Discard the sequence and return to Configuration">
+        Cancel session
+      </button>
+      <button class="help-btn" title="User guide">?</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ============================== SIDEBAR ============================ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <img src="{{ url_for('static', filename='img/neotrient_logo.png') }}"
+             alt="Neotrient"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';"
+             class="brand-img" />
+        <div class="brand" style="display:none;">Neotrient</div>
+        <div class="product-tag">Lab Analysis · v{{ app_version }}</div>
+      </div>
+
+      <div class="sidebar-section-label">Sequence workflow</div>
+      <ul class="phases seq-phases">
+        <li class="phase" data-clickable="true" onclick="window.location.href='/'">
+          <div class="phase-num">1</div>
+          <div class="phase-label"><strong>Configuration</strong><span>Operator · Device · Mode</span></div>
+        </li>
+        <li class="phase active" id="phaseBuild">
+          <div class="phase-num">2</div>
+          <div class="phase-label"><strong>Build</strong><span>Batches · Samples</span></div>
+        </li>
+        <li class="phase" id="phaseReview">
+          <div class="phase-num">3</div>
+          <div class="phase-label"><strong>Review</strong><span>Confirm before run</span></div>
+        </li>
+      </ul>
+
+      <div class="sidebar-meta">
+        <div class="meta-row"><span class="key">Operator</span><span class="val" id="metaOperator">—</span></div>
+        <div class="meta-row"><span class="key">Mode</span><span class="val">Sequence</span></div>
+        <div class="meta-row"><span class="key">Batches</span><span class="val" id="metaBatches">0</span></div>
+        <div class="meta-row"><span class="key">Samples</span><span class="val" id="metaSamples">0</span></div>
+      </div>
+    </aside>
+
+    <!-- ============================== MAIN CONTENT ======================= -->
+    <main class="main">
+
+      <!-- ===== Build view ============================================== -->
+      <section id="buildView">
+        <h1 id="pageTitle">Sequence</h1>
+        <p class="subtitle">Plan one or more batches of samples, then send them to the run page.</p>
+
+        <!-- Create new batch -->
+        <div class="card">
+          <h3 class="card-title">Create new batch</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>Batch ID <span class="req">*</span></label>
+              <input id="newBatchId" type="text" placeholder="Batch ID" />
+            </div>
+            <div class="field">
+              <label>Sample name <span class="req">*</span></label>
+              <input id="newSamplePrefix" type="text" placeholder="Sample name" />
+            </div>
+            <div class="field full">
+              <label>Method preset</label>
+              <select id="newPreset"></select>
+              <div id="newPresetBadge" style="margin-top:8px;"></div>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn" id="btnCreateBatch">+ Create batch</button>
+          </div>
+        </div>
+
+        <!-- Batches list (populated dynamically) -->
+        <div id="batchesList"></div>
+
+        <div class="next-bar">
+          <button class="btn" id="btnNext" disabled>Next</button>
+        </div>
+      </section>
+
+      <!-- ===== Review view ============================================= -->
+      <section id="reviewView" class="hidden">
+        <h1>Sequence</h1>
+        <p class="subtitle">Please confirm batches for measurement.</p>
+
+        <div class="card">
+          <h3 class="card-title">Review</h3>
+          <div id="reviewList"></div>
+        </div>
+
+        <div class="next-bar" style="justify-content: space-between;">
+          <button class="btn btn-secondary" id="btnBackToBuild">← Back</button>
+          <button class="btn" id="btnConfirm">Confirm</button>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- ============================== Sample-info modal ====================== -->
+<div class="modal-back hidden" id="modalBack">
+  <div class="modal-shell">
+    <div class="modal-shell-head">
+      <div class="title-block">
+        <div class="label" id="modalLabel">Sample identification</div>
+        <div class="name" id="modalSampleName">—</div>
+      </div>
+      <button class="icon-btn" id="modalClose" title="Close">✕</button>
+    </div>
+    <div class="modal-shell-body">
+      <div class="field-grid">
+        <div class="full">
+          <label>Sample type</label>
+          <select id="fldSampleType">
+            <option value="sample">Sample</option>
+            <option value="blank">Blank</option>
+            <option value="standard">Standard</option>
+            <option value="qc">QC</option>
+          </select>
+        </div>
+
+        <div class="full">
+          <label>Solution / description</label>
+          <input id="fldDescription" type="text" placeholder="Solution / description" />
+        </div>
+
+        <div>
+          <label>Concentration</label>
+          <div class="unit-input">
+            <input id="fldConcValue" type="number" step="any" placeholder="Concentration" />
+            <select id="fldConcUnit">
+              <option>mM</option><option>µM</option><option>nM</option>
+              <option>M</option><option>mg/L</option><option>ppm</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label>Volume</label>
+          <div class="unit-input">
+            <input id="fldVolValue" type="number" step="any" placeholder="Volume" />
+            <select id="fldVolUnit">
+              <option>µL</option><option>mL</option><option>L</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="full">
+          <label>Notes</label>
+          <textarea id="fldNotes" placeholder="Notes"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-shell-foot">
+      <button class="btn btn-secondary" id="modalCancel">Cancel</button>
+      <button class="btn" id="modalSave">Save sample info</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =================================================================
+   PRESETS — populated from /api/presets at boot.  Falls back to an
+   empty list if the call fails so the UI degrades gracefully.
+   ================================================================= */
+let MOCK_PRESETS = [];
+function presetById(id) { return MOCK_PRESETS.find(p => p.id === id); }
+
+async function loadPresetsFromServer() {
+  try {
+    const r = await fetch('/api/presets');
+    const d = await r.json();
+    MOCK_PRESETS = (d.items || []).map(p => ({
+      id: p.id,
+      name: p.name,
+      technique: p.technique || 'CV',
+      trigger_mode: p.trigger_mode || 'manual',
+    }));
+  } catch (e) {
+    console.warn('Could not load /api/presets:', e);
+    MOCK_PRESETS = [];
+  }
+}
+
+async function loadOperatorFromServer() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    if (d && d.operator) state.config.operator = d.operator;
+  } catch (e) { /* keep default */ }
+}
+
+/* =================================================================
+   STATE
+   ================================================================= */
+const state = {
+  view: "build",            // "build" | "review"
+  batches: [],              // [{id, samplePrefix, presetId, samples:[{name,info,savedAt}]}]
+  // presetId is empty here because MOCK_PRESETS hasn't loaded yet —
+  // init() fills it after /api/presets returns.
+  draft: { batchId: "", samplePrefix: "", presetId: "" },
+  editing: null,
+  config: {
+    // Pulled from /api/status (which returns the Configuration page's
+    // operator name) at init().
+    operator: "—",
+  },
+};
+
+function newBatch(id, prefix, presetId) {
+  return { id, samplePrefix: prefix, presetId, samples: [], createdAt: new Date().toISOString() };
+}
+function newSample(prefix, n) {
+  return { name: `${prefix}_${n}`, info: null, savedAt: null };
+}
+
+/* =================================================================
+   HELPERS
+   ================================================================= */
+function $(id) { return document.getElementById(id); }
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null) continue;
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (c == null) continue;
+    e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  }
+  return e;
+}
+function pad2(n) { return String(n).padStart(2, "0"); }
+function formatDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return `${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+function suggestNextBatchId() {
+  let max = 0;
+  for (const b of state.batches) {
+    const m = /^B(\d+)$/.exec(b.id);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return "B" + String(max + 1).padStart(3, "0");
+}
+
+/* =================================================================
+   PRESET DROPDOWN + BADGE
+   ================================================================= */
+function fillPresetSelect(sel, currentId) {
+  sel.innerHTML = "";
+  if (MOCK_PRESETS.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(no presets — check Configuration → Manage presets)";
+    sel.appendChild(opt);
+    return;
+  }
+  for (const p of MOCK_PRESETS) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = `${p.name} · ${p.technique} · ${p.trigger_mode}`;
+    if (p.id === currentId) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+function presetBadge(presetId) {
+  const p = presetById(presetId);
+  if (!p) return el("span", {});
+  const cls = p.trigger_mode === "drop_detect" ? "drop" : "manual";
+  const label = p.trigger_mode === "drop_detect"
+    ? "Trigger: drop-detect"
+    : "Trigger: manual";
+  return el("span", { class: `trigger-badge ${cls}` },
+    el("span", { class: "dot" }),
+    label
+  );
+}
+
+/* =================================================================
+   BUILD VIEW — RENDER
+   ================================================================= */
+function renderDraft() {
+  $("newBatchId").value = state.draft.batchId || "";
+  $("newSamplePrefix").value = state.draft.samplePrefix || "";
+  fillPresetSelect($("newPreset"), state.draft.presetId);
+  const wrap = $("newPresetBadge");
+  wrap.innerHTML = "";
+  wrap.appendChild(presetBadge(state.draft.presetId));
+  $("newBatchId").setAttribute("placeholder", suggestNextBatchId() || "Batch ID");
+}
+
+function renderBatchesList() {
+  const root = $("batchesList");
+  root.innerHTML = "";
+
+  if (state.batches.length === 0) {
+    root.appendChild(el("div", {
+      class: "card",
+      style: "text-align:center; color:var(--text-muted); font-size:13px; font-style:italic;"
+    }, "No batches yet. Create one above."));
+    return;
+  }
+
+  state.batches.forEach((batch, bIdx) => {
+    const preset = presetById(batch.presetId);
+    const card = el("div", { class: "batch-card" });
+    const head = el("div", { class: "batch-head" });
+    const meta = el("div", { class: "meta" },
+      el("span", { class: "batch-id" }, batch.id),
+      el("span", { class: "batch-prefix" }, "name: ", el("b", {}, batch.samplePrefix)),
+      el("span", { class: "batch-preset" },
+        `${preset?.name || batch.presetId} · ${preset?.technique || ""}`),
+      presetBadge(batch.presetId),
+    );
+    const actions = el("div", { class: "batch-actions" },
+      el("button", {
+        class: "btn btn-secondary",
+        style: "padding:5px 10px; font-size:12px;",
+        onclick: () => deleteBatch(bIdx),
+      }, "Delete batch"),
+    );
+    head.appendChild(meta);
+    head.appendChild(actions);
+    card.appendChild(head);
+
+    const wrap = el("div", { class: "seq-wrap" });
+    const table = el("table", { class: "seq-table" });
+    const thead = el("thead", {},
+      el("tr", {},
+        el("th", { class: "row-num" }, "#"),
+        el("th", {}, "Sample"),
+        el("th", { class: "col-date" }, "Date"),
+        el("th", { class: "col-operator" }, "Operator"),
+        el("th", { class: "col-method" }, "Method"),
+        el("th", { style: "text-align:right;" }, ""),
+      )
+    );
+    table.appendChild(thead);
+
+    const tbody = el("tbody");
+    if (batch.samples.length === 0) {
+      tbody.appendChild(el("tr", {},
+        el("td", { colspan: 6, class: "empty-table" },
+          "No samples yet. Click + Add sample to begin.")
+      ));
+    } else {
+      batch.samples.forEach((sample, sIdx) => {
+        const filled = !!sample.info;
+        const tr = el("tr", { class: filled ? "" : "row-empty" });
+        tr.appendChild(el("td", { class: "row-num" }, String(sIdx + 1)));
+        tr.appendChild(el("td", { class: "sample-name-cell" }, sample.name));
+        tr.appendChild(el("td", { class: "col-date col-meta" },
+          filled ? formatDate(sample.savedAt) : "—"));
+        tr.appendChild(el("td", { class: "col-operator col-meta" },
+          filled ? (sample.info.operator || state.config.operator || "—") : "—"));
+        tr.appendChild(el("td", { class: "col-method col-meta" },
+          preset?.name || "—"));
+        const acts = el("td", { class: "row-actions" });
+        acts.appendChild(el("button", {
+          class: "icon-btn", title: filled ? "Edit info" : "Fill info",
+          onclick: () => openSampleModal(bIdx, sIdx),
+        }, filled ? "✎" : "＋"));
+        acts.appendChild(el("button", {
+          class: "icon-btn danger", title: "Delete sample",
+          onclick: () => deleteSample(bIdx, sIdx),
+        }, "✕"));
+        tr.appendChild(acts);
+        tbody.appendChild(tr);
+      });
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+
+    const foot = el("div", { class: "batch-foot" },
+      el("button", {
+        class: "btn",
+        style: "padding:6px 12px; font-size:12px;",
+        onclick: () => addSampleToBatch(bIdx),
+      }, "+ Add sample"),
+    );
+    card.appendChild(foot);
+
+    root.appendChild(card);
+  });
+}
+
+function renderNextButton() {
+  const totalSamples = state.batches.reduce((n, b) => n + b.samples.length, 0);
+  const allFilled = state.batches.every(b =>
+    b.samples.length > 0 && b.samples.every(s => !!s.info));
+  $("btnNext").disabled = !(state.batches.length > 0 && allFilled && totalSamples > 0);
+  $("btnNext").title = !state.batches.length
+    ? "Create at least one batch first"
+    : !totalSamples
+    ? "Add at least one sample"
+    : !allFilled
+    ? "Fill sample info for every sample first"
+    : "";
+}
+
+function renderSidebarMeta() {
+  $("metaOperator").textContent = state.config.operator || "—";
+  $("metaBatches").textContent = String(state.batches.length);
+  $("metaSamples").textContent = String(state.batches.reduce((n, b) => n + b.samples.length, 0));
+}
+
+function renderBuild() {
+  renderDraft();
+  renderBatchesList();
+  renderNextButton();
+  renderSidebarMeta();
+}
+
+/* =================================================================
+   REVIEW VIEW — RENDER
+   ================================================================= */
+function renderReview() {
+  const root = $("reviewList");
+  root.innerHTML = "";
+  if (state.batches.length === 0) {
+    root.appendChild(el("div", { class: "review-empty" }, "No batches built."));
+    return;
+  }
+  state.batches.forEach(batch => {
+    const preset = presetById(batch.presetId);
+    const card = el("div", { class: "review-batch" });
+    card.appendChild(el("h3", {}, `${batch.id} · name “${batch.samplePrefix}”`));
+    card.appendChild(el("div", { class: "meta-line" },
+      `Preset: ${preset?.name || batch.presetId} · ${preset?.technique} · trigger=${preset?.trigger_mode} · ${batch.samples.length} sample${batch.samples.length === 1 ? "" : "s"}`
+    ));
+    const t = el("table", { class: "review-table" });
+    t.appendChild(el("thead", {},
+      el("tr", {},
+        el("th", {}, "#"),
+        el("th", {}, "Sample"),
+        el("th", {}, "Date"),
+        el("th", {}, "Operator"),
+        el("th", {}, "Type"),
+        el("th", {}, "Description"),
+        el("th", {}, "Concentration"),
+        el("th", {}, "Volume"),
+        el("th", {}, "Notes"),
+      )
+    ));
+    const tb = el("tbody");
+    batch.samples.forEach((s, i) => {
+      const info = s.info || {};
+      tb.appendChild(el("tr", {},
+        el("td", {}, String(i + 1)),
+        el("td", { class: "name" }, s.name),
+        el("td", {}, formatDate(s.savedAt)),
+        el("td", {}, info.operator || state.config.operator || "—"),
+        el("td", {}, info.sampleType || "—"),
+        el("td", {}, info.description || "—"),
+        el("td", {},
+          info.concValue ? `${info.concValue} ${info.concUnit}` : "—"),
+        el("td", {},
+          info.volValue ? `${info.volValue} ${info.volUnit}` : "—"),
+        el("td", {}, info.notes || "—"),
+      ));
+    });
+    t.appendChild(tb);
+    card.appendChild(t);
+    root.appendChild(card);
+  });
+  renderSidebarMeta();
+}
+
+/* =================================================================
+   ACTIONS — BATCHES
+   ================================================================= */
+function createBatch() {
+  const id = ($("newBatchId").value.trim()) || suggestNextBatchId();
+  const prefix = $("newSamplePrefix").value.trim();
+  const presetId = $("newPreset").value;
+
+  if (!prefix) { alert("Sample name is required."); return; }
+  if (!presetId) { alert("Pick a method preset first."); return; }
+  if (state.batches.some(b => b.id === id)) {
+    alert(`Batch ID "${id}" already exists. Pick another.`);
+    return;
+  }
+
+  state.batches.push(newBatch(id, prefix, presetId));
+  state.draft.batchId = "";
+  state.draft.samplePrefix = "";
+  // Keep the preset selection — operators usually use the same preset
+  // for several batches in a row.
+  render();
+}
+
+function deleteBatch(bIdx) {
+  const batch = state.batches[bIdx];
+  if (!confirm(`Delete batch ${batch.id} and its ${batch.samples.length} sample(s)?`)) return;
+  state.batches.splice(bIdx, 1);
+  render();
+}
+
+/* =================================================================
+   ACTIONS — SAMPLES
+   ================================================================= */
+function addSampleToBatch(bIdx) {
+  const batch = state.batches[bIdx];
+  const n = batch.samples.length + 1;
+  const sample = newSample(batch.samplePrefix, n);
+  batch.samples.push(sample);
+  openSampleModal(bIdx, batch.samples.length - 1);
+  render();
+}
+
+function deleteSample(bIdx, sIdx) {
+  const batch = state.batches[bIdx];
+  if (!confirm(`Delete sample ${batch.samples[sIdx].name}?`)) return;
+  batch.samples.splice(sIdx, 1);
+  // Renumber empty samples to stay sequential; samples with saved
+  // info keep their original name to avoid orphaning data.
+  batch.samples.forEach((s, i) => {
+    if (!s.info) s.name = `${batch.samplePrefix}_${i + 1}`;
+  });
+  render();
+}
+
+/* =================================================================
+   SAMPLE-INFO MODAL
+   ================================================================= */
+function openSampleModal(bIdx, sIdx) {
+  state.editing = { bIdx, sIdx };
+  const batch = state.batches[bIdx];
+  const sample = batch.samples[sIdx];
+  const info = sample.info || {};
+
+  $("modalLabel").textContent = `Sample identification — Batch ${batch.id}`;
+  $("modalSampleName").textContent = sample.name;
+  $("fldSampleType").value = info.sampleType || "sample";
+  $("fldDescription").value = info.description || "";
+  $("fldConcValue").value = info.concValue || "";
+  $("fldConcUnit").value = info.concUnit || "mM";
+  $("fldVolValue").value = info.volValue || "";
+  $("fldVolUnit").value = info.volUnit || "mL";
+  $("fldNotes").value = info.notes || "";
+
+  $("modalBack").classList.remove("hidden");
+  setTimeout(() => $("fldDescription").focus(), 50);
+}
+
+function closeSampleModal(saved) {
+  if (!state.editing) { $("modalBack").classList.add("hidden"); return; }
+  state.editing = null;
+  $("modalBack").classList.add("hidden");
+  render();
+}
+
+function saveSampleInfo() {
+  if (!state.editing) return;
+  const { bIdx, sIdx } = state.editing;
+  const sample = state.batches[bIdx].samples[sIdx];
+  const description = $("fldDescription").value.trim();
+  if (!description) {
+    alert("Solution / description is required.");
+    return;
+  }
+  sample.info = {
+    sampleType: $("fldSampleType").value,
+    operator: state.config.operator,
+    description,
+    concValue: $("fldConcValue").value.trim(),
+    concUnit: $("fldConcUnit").value,
+    volValue: $("fldVolValue").value.trim(),
+    volUnit: $("fldVolUnit").value,
+    notes: $("fldNotes").value.trim(),
+  };
+  sample.savedAt = new Date().toISOString();
+  closeSampleModal(true);
+}
+
+/* =================================================================
+   VIEW SWITCHING
+   ================================================================= */
+function showView(view) {
+  state.view = view;
+  $("buildView").classList.toggle("hidden", view !== "build");
+  $("reviewView").classList.toggle("hidden", view !== "review");
+  // Update sidebar phase highlight
+  $("phaseBuild").classList.toggle("active", view === "build");
+  $("phaseReview").classList.toggle("active", view === "review");
+  if (view === "review") renderReview();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function render() {
+  if (state.view === "build") renderBuild();
+  else renderReview();
+}
+
+/* =================================================================
+   MANIFEST
+   ================================================================= */
+function buildManifest() {
+  return {
+    schema: "neotrient.batch_manifest.v1",
+    created_at: new Date().toISOString(),
+    batches: state.batches.map(b => ({
+      batch_id: b.id,
+      sample_prefix: b.samplePrefix,
+      preset_id: b.presetId,
+      preset: presetById(b.presetId),
+      created_at: b.createdAt,
+      samples: b.samples.map((s, i) => ({
+        index: i + 1,
+        name: s.name,
+        info: s.info,
+        saved_at: s.savedAt,
+      })),
+    })),
+  };
+}
+
+/* =================================================================
+   WIRING
+   ================================================================= */
+async function init() {
+  // Load presets + operator from the live API.  Both have try/catch
+  // inside so init() never aborts mid-way.
+  await Promise.all([loadPresetsFromServer(), loadOperatorFromServer()]);
+  if (MOCK_PRESETS.length > 0 && !state.draft.presetId) {
+    state.draft.presetId = MOCK_PRESETS[0].id;
+  }
+  fillPresetSelect($("newPreset"), state.draft.presetId);
+  renderDraft();
+  renderSidebarMeta();
+
+  $("newBatchId").addEventListener("input", e => state.draft.batchId = e.target.value);
+  $("newSamplePrefix").addEventListener("input", e => state.draft.samplePrefix = e.target.value);
+  $("newPreset").addEventListener("change", e => {
+    state.draft.presetId = e.target.value;
+    renderDraft();
+  });
+
+  $("btnCreateBatch").addEventListener("click", createBatch);
+  $("btnNext").addEventListener("click", () => showView("review"));
+  $("btnBackToBuild").addEventListener("click", () => showView("build"));
+  $("btnConfirm").addEventListener("click", () => {
+    const manifest = buildManifest();
+    alert("Confirmed.\n\n" + JSON.stringify(manifest, null, 2).slice(0, 600) + "\n…");
+    console.log("batch_manifest.json", manifest);
+  });
+
+  $("modalSave").addEventListener("click", saveSampleInfo);
+  $("modalCancel").addEventListener("click", () => closeSampleModal(false));
+  $("modalClose").addEventListener("click", () => closeSampleModal(false));
+  $("modalBack").addEventListener("click", e => {
+    if (e.target === $("modalBack")) closeSampleModal(false);
+  });
+
+  render();
+}
+
+window.addEventListener("DOMContentLoaded", init);
+</script>
+</body>
+</html>

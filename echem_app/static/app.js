@@ -30,6 +30,10 @@ const state = {
   measureReader: null,    // current SSE reader so we can cancel
   measureInProgress: false,
   measureFinished: false,
+  // v0.2.0: operator name in JS-land (mirror of the server's _STATE.operator).
+  // Populated on Begin session from the fOperator input; consumed by the
+  // Sequence batch table (Operator column) and the header pill.
+  operator: '',
   chart: null,
   // For multi-cycle: each scan number gets its own Plotly trace.
   // chartScanIndex maps scan number -> trace index in the figure.
@@ -47,6 +51,63 @@ const state = {
   // tells the operator what happened in their session.
   eventLog: [],
 };
+
+/* v0.2.0: which Sample Identification form variant is active for this
+ * session.  Reads the dropdown in Configuration (Clinical / Standard).
+ * Falls back to "clinical" if the markup is missing for any reason. */
+function getSampleIdPreset() {
+  const sel = document.getElementById('fSampleIdPreset');
+  return (sel && sel.value) || 'clinical';
+}
+
+/* Today's date in YYYY-MM-DD — used to auto-fill Prep date when the
+ * Standard-solution form opens. */
+function todayYMD() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+
+/* Reset every input in both Sample-ID form variants (clinical +
+ * standard, mobile + desktop modal).  Optionally pre-fill Sample ID
+ * with `prefillSampleId` so the auto-generated Sequence row name
+ * surfaces in the form.  Called whenever Phase 1 opens fresh — without
+ * this, fields from the previous sample leak into the next entry. */
+function resetSampleIdForms(prefillSampleId) {
+  const today = todayYMD();
+  const allFieldDefaults = {
+    // Clinical (mobile)
+    'inl_manSampleId': prefillSampleId || '',
+    'inl_manDonor': '', 'inl_manDate': '', 'inl_manStorage': '',
+    'inl_manAliquot': '', 'inl_manClinicalSite': '', 'inl_manNotes': '',
+    // Standard (mobile)
+    'inl_manStdSampleId': prefillSampleId || '',
+    'inl_manStdSampleType': 'standard',
+    'inl_manStdConcValue': '',
+    'inl_manStdConcUnit': 'mM',
+    'inl_manStdPrepDate': today,
+    'inl_manStdLot': '',
+    'inl_manStdSolvent': '',
+    'inl_manStdNotes': '',
+    // Clinical (desktop modal)
+    'manSampleId': prefillSampleId || '',
+    'manDonor': '', 'manDate': '', 'manStorage': '',
+    'manAliquot': '', 'manClinicalSite': '', 'manNotes': '',
+    // Standard (desktop modal)
+    'manStdSampleId': prefillSampleId || '',
+    'manStdSampleType': 'standard',
+    'manStdConcValue': '',
+    'manStdConcUnit': 'mM',
+    'manStdPrepDate': today,
+    'manStdLot': '',
+    'manStdSolvent': '',
+    'manStdNotes': '',
+  };
+  for (const [id, def] of Object.entries(allFieldDefaults)) {
+    const el = document.getElementById(id);
+    if (el) el.value = def;
+  }
+}
 
 /* Push a sample-level event to the in-session log.  Used by Phase 5 to
  * render an activity stream (Saved / Re-measured / Analyzed). */
@@ -68,6 +129,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSplash();
   await Promise.all([loadPresets(), loadDevices(), loadModels()]);
   populatePhase0();
+  // v0.2.0: Sample Identification form variant — sync the visible form
+  // set to whichever option is selected and re-sync on change.
+  applySampleIdPresetUI();
+  const sampleIdSel = document.getElementById('fSampleIdPreset');
+  if (sampleIdSel) sampleIdSel.addEventListener('change', applySampleIdPresetUI);
+  // Run mode — drives whether Begin session opens the wizard or
+  // navigates to /sequence.  Toggling it also hides/shows the
+  // Experiment preset card on Configuration.
+  applyRunModeUI();
+  const runModeSel = document.getElementById('fRunMode');
+  if (runModeSel) runModeSel.addEventListener('change', applyRunModeUI);
   refreshStatus();
   setInterval(refreshStatus, 5000);
 });
@@ -132,7 +204,16 @@ async function refreshStatus() {
     setText('metaOperator', d.operator || '—');
     setText('metaDevice',
       d.device_name ? `${d.device_name} · ${d.device_id}` : '—');
-    setText('metaPreset', d.preset_name || '—');
+    // v0.2.x round 6: in Sequence Build phase the session preset isn't
+    // committed yet — each batch picks its own.  Show "—" so the
+    // operator doesn't think the Configuration default applies.  In
+    // every other phase (Configuration, Phase 1-5) we show the
+    // server's _STATE.preset_name as before.
+    if (state.phase === 'seq-build') {
+      setText('metaPreset', '—');
+    } else {
+      setText('metaPreset', d.preset_name || '—');
+    }
     const ps = document.getElementById('metaPalmsens');
     // Show "Connected" when we actually hold an open link, not just when
     // the device record looks valid.
@@ -211,29 +292,90 @@ async function retryPalmsens() {
  * ----------------------------------------------------------------------- */
 
 function goPhase(n) {
+  // v0.2.0: a phase can be a number (0-5, the existing wizard phases)
+  // OR the string "seq-build" — the Sequence builder, inserted between
+  // Configuration and Sample Identification when run mode = sequence.
   state.phase = n;
-  state.maxPhaseReached = Math.max(state.maxPhaseReached, n);
+  if (typeof n === 'number') {
+    state.maxPhaseReached = Math.max(state.maxPhaseReached, n);
+  }
+  // Hide all numbered screens, then show the right one (or none if seq-build).
   for (let i = 0; i <= 5; i++) {
     const el = document.getElementById('screen-' + i);
     if (el) el.classList.toggle('hidden', i !== n);
   }
+  const seqBuildEl = document.getElementById('screen-seq-build');
+  if (seqBuildEl) seqBuildEl.classList.toggle('hidden', n !== 'seq-build');
+
   // Whenever the visible phase changes, the chart's container width
   // can change too (sidebar collapses/expands on mobile).  Tell Plotly
   // to re-fit so the curve stays proportional.
   if (state.__chartResize) {
     setTimeout(state.__chartResize, 80);
   }
-  document.querySelectorAll('.phase').forEach((el, i) => {
+  // Sidebar highlight — match by data-phase attribute.  Numeric phases
+  // (0-5) follow the existing active/done/locked rules.  The string
+  // phase "seq-build" is special-cased: active when on it, done when
+  // we're past it (cursor.mode === 'run' means Build is finished and
+  // we're stepping through measurements).
+  const seqRunning = (typeof seqState !== 'undefined'
+                      && seqState.cursor && seqState.cursor.mode === 'run');
+  document.querySelectorAll('.phase').forEach(el => {
     el.classList.remove('active', 'done', 'locked');
-    if (i === n) el.classList.add('active');
-    else if (i < state.maxPhaseReached) el.classList.add('done');
-    if (i > state.maxPhaseReached) el.classList.add('locked');
+    const ph = el.getAttribute('data-phase');
+    if (ph === 'seq-build') {
+      if (n === 'seq-build')      el.classList.add('active');
+      else if (seqRunning)        el.classList.add('done');
+      // not running, not active → just neutral (no class)
+      return;
+    }
+    const numPh = parseInt(ph, 10);
+    if (numPh === n)                                  el.classList.add('active');
+    else if (numPh < state.maxPhaseReached)           el.classList.add('done');
+    if (numPh > state.maxPhaseReached)                el.classList.add('locked');
   });
-  // Sample pill: visible only during the chain-of-custody phases (1, 2, 3).
-  // Hidden on Phase 0 (no sample yet) and on Phase 4-5 (the operator may be
-  // browsing many samples at once).
-  document.getElementById('hdrSample').classList.toggle(
-    'hidden', n < 1 || n >= 4);
+  // v0.2.x round 6: keep sidebar metaPreset in sync with the current
+  // phase immediately (refreshStatus only fires every 5s).  Build phase
+  // shows "—" (no commitment); other phases show the server's preset.
+  const metaPresetEl = document.getElementById('metaPreset');
+  if (metaPresetEl) {
+    if (n === 'seq-build') {
+      metaPresetEl.textContent = '—';
+    } else if (state.lastStatus && state.lastStatus.preset_name) {
+      metaPresetEl.textContent = state.lastStatus.preset_name;
+    }
+  }
+
+  // Header pills (v0.2.0):
+  //   Operator pill → Configuration (phase 0) + Sequence Build (seq-build).
+  //   Sample pill   → Phase 1-3 (chain-of-custody).
+  //   Batch pill    → Phase 1-3 AND only when running a sequence
+  //                   (cursor.mode === 'run').
+  // Phase 4-5 hide all three so the operator can browse the per-session
+  // batch without a stuck "Sample: X" label confusing them.
+  const hdrOp     = document.getElementById('hdrOperator');
+  const hdrSample = document.getElementById('hdrSample');
+  const hdrBatch  = document.getElementById('hdrBatch');
+  const onChain   = (typeof n === 'number' && n >= 1 && n <= 3);
+  const onConfig  = (n === 0 || n === 'seq-build');
+  if (hdrOp)     hdrOp.classList.toggle('hidden',     !(onConfig && state.operator));
+  if (hdrSample) hdrSample.classList.toggle('hidden', !onChain);
+  // Update the operator name text whenever the pill becomes visible.
+  if (hdrOp && state.operator) {
+    const nameEl = document.getElementById('hdrOperatorName');
+    if (nameEl) nameEl.textContent = state.operator;
+  }
+  // Batch pill is only meaningful inside a sequence run.
+  const seqRunning2 = (typeof seqState !== 'undefined'
+                       && seqState.cursor && seqState.cursor.mode === 'run');
+  if (hdrBatch) {
+    hdrBatch.classList.toggle('hidden', !(onChain && seqRunning2));
+    if (seqRunning2) {
+      const batch = seqState.batches[seqState.cursor.batchIdx];
+      const idEl = document.getElementById('hdrBatchId');
+      if (idEl && batch) idEl.textContent = batch.id;
+    }
+  }
 
   // Mobile bottom-nav state mirrors the workflow tabs above.
   updateMobileNav(n);
@@ -248,15 +390,30 @@ function goPhase(n) {
   }
 
   if (n === 1) {
+    // v0.2.0: render the Sequence overview card if we're inside a Run.
+    // Hidden otherwise (single mode + sequence Build mode both leave
+    // it collapsed).
+    if (typeof seqRenderOverviewOnPhase1 === 'function') {
+      try { seqRenderOverviewOnPhase1(); } catch (e) { console.warn(e); }
+    }
     startQrScanner();
     // If we're returning to Phase 1 after a measurement (or via the
     // sidebar with no fresh sample), don't display the previous sample's
     // confirm card — it's misleading.  Operator must re-scan or use Manual.
+    // v0.2.x round 6: in Sequence run mode the sample for the current
+    // cursor was already staged on the server (seqStageSampleOnServer),
+    // so state.sample is the next planned sample's meta — keep it
+    // visible.  The "alreadyMeasured" guard is only relevant for single
+    // mode where the operator must re-scan to advance.
+    const seqRunActive = (typeof seqState !== 'undefined'
+                          && seqState.cursor && seqState.cursor.mode === 'run');
     const sid = state.sample && state.sample.sample_id;
-    const alreadyMeasured = sid && state.measuredSamples.some(s => s.sample_id === sid);
+    const alreadyMeasured = !seqRunActive && sid &&
+      state.measuredSamples.some(s => s.sample_id === sid);
     if (!sid || alreadyMeasured) {
-      const cc = document.getElementById('confirmCard');
-      if (cc) cc.classList.add('hidden');
+      // v0.2.0: confirmCard is now always visible; render the
+      // "awaiting scan" placeholder + reset the QR frame to live video.
+      renderConfirmPlaceholder();
       const cb = document.getElementById('btnConfirmSample');
       if (cb) cb.disabled = true;
       state.sample = null;
@@ -281,10 +438,27 @@ function goPhase(n) {
   if (n === 3) initLiveChart();
   if (n === 4) preparePhase4();
   if (n === 5) preparePhase5();
+  // v0.2.x round 8: relabel Run-next-sample buttons whenever the phase
+  // changes — keeps Phase 3/4/5 labels in sync with the sequence cursor.
+  if (typeof updateNextSampleButtons === 'function') updateNextSampleButtons();
 }
 
-/* Sidebar click handler — only allow re-visiting phases we've reached. */
+/* Sidebar click handler — only allow re-visiting phases we've reached.
+ * The string phase "seq-build" is always navigable when in Sequence mode
+ * (it's the planning phase, not a one-way gate).
+ * v0.2.x round 9: while a measurement is running, sidebar nav is locked.
+ * The operator must click "Cancel measurement" first.  This prevents
+ * accidental loss of the in-flight chip session. */
 function userClickPhase(n) {
+  if (state.measureInProgress && n !== 3) {
+    toast('Cancel the running measurement first.', 'error');
+    return;
+  }
+  if (n === 'seq-build') {
+    if (getRunMode() !== 'sequence') return;
+    goPhase('seq-build');
+    return;
+  }
   if (n > state.maxPhaseReached) return;   // locked
   goPhase(n);
 }
@@ -418,7 +592,15 @@ function setAnalysisTab() { /* no-op since tabs were removed */ }
 
 async function loadPresets() {
   state.presets = await getJSON('/api/presets');
-  state.selectedPresetId = state.presets.default_id;
+  // Preserve the operator's pick if it still exists; otherwise fall
+  // back to the server's default.  Mirrors the loadDevices logic so
+  // a "Set as default" elsewhere doesn't silently swap the active
+  // selection out from under the operator.
+  const stillExists = state.selectedPresetId
+      && state.presets.items.some(p => p.id === state.selectedPresetId);
+  if (!stillExists) {
+    state.selectedPresetId = state.presets.default_id;
+  }
   renderPresetsList();
 }
 async function loadDevices() {
@@ -436,8 +618,43 @@ async function loadDevices() {
 }
 async function loadModels() {
   state.models = await getJSON('/api/models');
-  state.selectedModelId = state.models.default_id;
+  const stillExists = state.selectedModelId
+      && state.models.items.some(m => m.id === state.selectedModelId);
+  if (!stillExists) {
+    state.selectedModelId = state.models.default_id;
+  }
   renderModelsList();
+}
+
+/* v0.2.0: refresh helpers — wrap the load+render cycle so every CRUD
+ * caller (Manage modal add/edit/delete/set-default) updates ALL the
+ * dropdowns that consume the data, not just the modal's own list.
+ *
+ * Without these, deleting a preset in Manage presets would clear the
+ * modal but leave the deleted preset selectable in fPreset (Configuration)
+ * and seqNewPreset (Sequence Build) until the page reloads. */
+async function refreshPresets() {
+  await loadPresets();
+  populatePhase0();
+  // Sequence Build's preset dropdown lives outside Phase 0, so refresh
+  // it explicitly.  Guarded for callers fired before the Sequence
+  // module's IIFE runs.
+  if (typeof seqFillPresetSelect === 'function') {
+    seqFillPresetSelect();
+    const badge = document.getElementById('seqNewPresetBadge');
+    if (badge && typeof seqPresetBadge === 'function' &&
+        typeof seqState !== 'undefined') {
+      badge.innerHTML = seqPresetBadge(seqState.draft.presetId);
+    }
+  }
+}
+async function refreshDevices() {
+  await loadDevices();
+  populatePhase0();
+}
+async function refreshModels() {
+  await loadModels();
+  preparePhase4();
 }
 
 function populatePhase0() {
@@ -489,6 +706,7 @@ function populatePhase0() {
           operator:    val('fOperator') || state.operator || '',
           device_id:   state.selectedDeviceId,
           preset_id:   state.selectedPresetId,
+          sample_id_preset: getSampleIdPreset(),
         });
       } catch (e) {
         console.warn('preset refresh on server failed', e);
@@ -736,31 +954,54 @@ function rangePickerToCv() {
 }
 
 /* Pre-fill the "Add new preset" form with the values of an existing
- * preset so the operator can edit + update (or save as new). */
+ * preset so the operator can edit + update (or save as new).
+ * v0.2.x round 6: technique-aware — loads CV-only fields for CV
+ * presets and SWV-only fields for SWV presets, then toggles which
+ * group is visible. */
 function loadPresetIntoForm(id) {
   const p = state.presets.items.find(x => x.id === id);
   if (!p) return;
-  const cv = p.cv || {};
   state.editingPresetId = id;
+  const technique = (p.technique || 'CV').toUpperCase();
+  const cv  = p.cv  || {};
+  const swv = p.swv || {};
+  // Common
   setIfExists('newPresetName', p.name || '');
+  setIfExists('newPresetTechnique', technique);
   setIfExists('newPresetTrigger', p.trigger_mode || 'drop_detect');
   setIfExists('newPresetDropMethod', p.drop_detect_method || 'voltage');
   setIfExists('newPresetVoltageThreshold', p.voltage_threshold_mv ?? 30);
-  setIfExists('newPresetN', cv.n_scans ?? 3);
-  setIfExists('newPresetScanRate', cv.scan_rate ?? 0.1);
-  setIfExists('newPresetEBegin', cv.e_begin ?? 0);
-  setIfExists('newPresetEv1', cv.e_vtx1 ?? 0.5);
-  setIfExists('newPresetEv2', cv.e_vtx2 ?? -0.5);
-  setIfExists('newPresetStep', cv.e_step ?? 0.01);
-  setIfExists('newPresetPretreatS', cv.pretreat_duration_s ?? 3);
-  setIfExists('newPresetRange', cv.current_range || '100u');
-  // Hydrate the PSTrace-style range picker from the preset's autorange bounds
-  initRangePickerFrom(cv);
   setIfExists('newPresetStartCountdown', p.start_countdown_s ?? 0);
   setIfExists('newPresetPostDropSettle', p.post_drop_settle_s ?? 0);
+  // Technique-specific sweep params
+  if (technique === 'SWV') {
+    setIfExists('newPresetEBegin',  swv.e_begin ?? -1.0);
+    setIfExists('newPresetEEnd',    swv.e_end ?? 1.0);
+    setIfExists('newPresetStep',    swv.e_step ?? 0.005);
+    setIfExists('newPresetEAmp',    swv.e_amplitude ?? 0.025);
+    setIfExists('newPresetFreq',    swv.frequency_hz ?? 25);
+    setIfExists('newPresetEDep',    swv.e_dep ?? 0.0);
+    setIfExists('newPresetTDep',    swv.t_dep ?? 0.0);
+    setIfExists('newPresetPretreatS', swv.pretreat_duration_s ?? 0);
+    const drEl = document.getElementById('newPresetDoReverse');
+    if (drEl) drEl.checked = !!swv.do_reverse_sweep;
+    setIfExists('newPresetRange', swv.current_range || '10u');
+    initRangePickerFrom(swv);
+  } else {
+    setIfExists('newPresetEBegin', cv.e_begin ?? 0);
+    setIfExists('newPresetEv1',    cv.e_vtx1 ?? 0.5);
+    setIfExists('newPresetEv2',    cv.e_vtx2 ?? -0.5);
+    setIfExists('newPresetStep',   cv.e_step ?? 0.01);
+    setIfExists('newPresetScanRate', cv.scan_rate ?? 0.1);
+    setIfExists('newPresetN',      cv.n_scans ?? 3);
+    setIfExists('newPresetPretreatS', cv.pretreat_duration_s ?? 3);
+    setIfExists('newPresetRange', cv.current_range || '100u');
+    initRangePickerFrom(cv);
+  }
   const dEl = document.getElementById('newPresetDefault');
   if (dEl) dEl.checked = !!p.is_default;
   onPresetTriggerChange();
+  onPresetTechniqueChange();   // toggle CV/SWV field visibility
   // Update form heading + button label
   const titleEl = document.getElementById('presetFormTitle');
   if (titleEl) titleEl.textContent = `Editing: ${p.name}`;
@@ -794,9 +1035,43 @@ function renderModelsList() {
   }
 }
 
-async function setDefaultDevice(id) { await postJSON(`/api/devices/${id}/set_default`, {}); await loadDevices(); populatePhase0(); }
-async function setDefaultPreset(id) { await postJSON(`/api/presets/${id}/set_default`, {}); await loadPresets(); populatePhase0(); }
-async function setDefaultModel(id)  { await postJSON(`/api/models/${id}/set_default`, {});  await loadModels();  preparePhase4(); }
+/* v0.2.0: setting a record as default also makes it the active
+ * selection — operators expect "this is the new default" to mean
+ * "this is what the next session will use".  Setting state.selectedXId
+ * here ensures the dropdown jumps to the new default after the refresh,
+ * even though loadX() preserves a stale pick when one exists. */
+async function setDefaultDevice(id) {
+  await postJSON(`/api/devices/${id}/set_default`, {});
+  state.selectedDeviceId = id;
+  await refreshDevices();
+}
+async function setDefaultPreset(id) {
+  await postJSON(`/api/presets/${id}/set_default`, {});
+  state.selectedPresetId = id;
+  if (typeof seqState !== 'undefined') seqState.draft.presetId = id;
+  await refreshPresets();
+  // v0.2.x round 6: if a session is already active, also re-issue
+  // /api/session/start so the SERVER's _STATE.preset switches.  Without
+  // this the next measurement would still run the OLD preset (the one
+  // Begin session was first called with), even though every dropdown
+  // and badge in the UI shows the new default.
+  if (state.connectionOpen) {
+    try {
+      await postJSON('/api/session/start', {
+        operator:    state.operator || val('fOperator') || '',
+        device_id:   state.selectedDeviceId,
+        preset_id:   state.selectedPresetId,
+        sample_id_preset: getSampleIdPreset(),
+      });
+      refreshStatus();   // pull fresh _STATE into the sidebar immediately
+    } catch (e) { console.warn('session preset sync failed:', e); }
+  }
+}
+async function setDefaultModel(id) {
+  await postJSON(`/api/models/${id}/set_default`, {});
+  state.selectedModelId = id;
+  await refreshModels();
+}
 async function deleteDevice(id) {
   const dev = state.devices.items.find(x => x.id === id);
   let body;
@@ -815,11 +1090,55 @@ async function deleteDevice(id) {
     toast(r.error || 'Delete failed.', 'error');
     return;
   }
-  await loadDevices(); populatePhase0();
+  await refreshDevices();
   toast('Device deleted.', 'success');
 }
-async function deletePreset(id) { await fetchDelete(`/api/presets/${id}`); await loadPresets(); populatePhase0(); }
-async function deleteModel(id)  { await fetchDelete(`/api/models/${id}`);  await loadModels();  preparePhase4(); }
+/* v0.2.0: protected presets/models require the admin password to
+ * delete (same NEO-001 password as the default-device guard).  Server
+ * checks the `protected` flag and returns needs_password=true if the
+ * password is missing or wrong; we surface a prompt() and retry. */
+async function deletePreset(id) {
+  const preset = state.presets.items.find(x => x.id === id);
+  let body;
+  if (preset && preset.protected) {
+    const pw = prompt(
+      'This preset is protected (team-supplied original).\n' +
+      'Enter the admin password to delete it (see PASSWORDS.txt):'
+    );
+    if (pw === null) return;
+    body = { password: pw };
+  } else {
+    if (!confirm('Delete this preset?')) return;
+  }
+  const r = await fetchDelete(`/api/presets/${id}`, body);
+  if (r && r.ok === false) {
+    toast(r.error || 'Delete failed.', 'error');
+    return;
+  }
+  await refreshPresets();
+  toast('Preset deleted.', 'success');
+}
+async function deleteModel(id) {
+  const model = state.models.items.find(x => x.id === id);
+  let body;
+  if (model && model.protected) {
+    const pw = prompt(
+      'This model is protected.\n' +
+      'Enter the admin password to delete it (see PASSWORDS.txt):'
+    );
+    if (pw === null) return;
+    body = { password: pw };
+  } else {
+    if (!confirm('Delete this model?')) return;
+  }
+  const r = await fetchDelete(`/api/models/${id}`, body);
+  if (r && r.ok === false) {
+    toast(r.error || 'Delete failed.', 'error');
+    return;
+  }
+  await refreshModels();
+  toast('Model deleted.', 'success');
+}
 
 async function addDevice() {
   const name = val('newDeviceName'), did = val('newDeviceId');
@@ -854,7 +1173,7 @@ async function addDevice() {
     await postJSON('/api/devices', body);
     toast('Device added.', 'success');
   }
-  await loadDevices(); populatePhase0();
+  await refreshDevices();
   clearDeviceForm();
 }
 
@@ -885,15 +1204,41 @@ async function addPreset() {
   // Pull current_range / auto_range_low / auto_range_high / enable_autoranging
   // from the PSTrace-style picker rather than the (now-hidden) text input.
   const rangeCv = rangePickerToCv();
+  const technique = (val('newPresetTechnique') || 'CV').toUpperCase();
+  // Common preset shell — technique-specific block (cv: / swv:) added below.
   const body = {
     name,
-    technique: 'CV',
+    technique,
     trigger_mode: val('newPresetTrigger') || 'drop_detect',
     drop_detect_method: val('newPresetDropMethod') || 'voltage',
     voltage_threshold_mv: parseInt(val('newPresetVoltageThreshold'), 10) || 30,
     start_countdown_s: parseInt(val('newPresetStartCountdown'), 10) || 0,
     post_drop_settle_s: parseInt(val('newPresetPostDropSettle'), 10) || 0,
-    cv: {
+    set_default: chk('newPresetDefault'),
+  };
+  if (technique === 'SWV') {
+    body.swv = {
+      e_begin: parseFloat(val('newPresetEBegin')) || 0,
+      e_end:   parseFloat(val('newPresetEEnd')) || 1.0,
+      e_step:  parseFloat(val('newPresetStep')) || 0.005,
+      e_amplitude:  parseFloat(val('newPresetEAmp')) || 0.025,
+      frequency_hz: parseInt(val('newPresetFreq'), 10) || 25,
+      do_reverse_sweep: chk('newPresetDoReverse'),
+      e_dep: parseFloat(val('newPresetEDep')) || 0.0,
+      t_dep: parseFloat(val('newPresetTDep')) || 0.0,
+      pretreat_duration_s: parseFloat(val('newPresetPretreatS')) || 0,
+      pretreat_potential_v: parseFloat(val('newPresetEBegin')) || 0,
+      pretreat_interval_s: 0.2,
+      pgstat_mode: 3,
+      max_bandwidth_hz: 292.527,
+      acquisition_frac_autoadjust: 50,
+      ...rangeCv,
+      e_range_min: parseFloat(val('newPresetEBegin')) || -1.0,
+      e_range_max: parseFloat(val('newPresetEEnd')) || 1.0,
+      cell_on_settle_s: 0.0,
+    };
+  } else {
+    body.cv = {
       e_begin: parseFloat(val('newPresetEBegin')) || 0,
       e_vtx1: parseFloat(val('newPresetEv1')) || 0.5,
       e_vtx2: parseFloat(val('newPresetEv2')) || -0.5,
@@ -906,9 +1251,8 @@ async function addPreset() {
       pgstat_mode: 2,
       max_bandwidth_hz: 40,
       ...rangeCv,
-    },
-    set_default: chk('newPresetDefault'),
-  };
+    };
+  }
 
   if (state.editingPresetId) {
     // Update existing preset in place
@@ -925,8 +1269,23 @@ async function addPreset() {
     await postJSON('/api/presets', body);
     toast('Preset added.', 'success');
   }
-  await loadPresets(); populatePhase0(); renderPresetsList();
+  await refreshPresets();
   clearPresetForm();
+}
+
+/* v0.2.x round 6 — toggle CV-only / SWV-only fields in the preset
+ * editor based on the technique dropdown.  Both groups share the
+ * .cv-only-field / .swv-only-field marker classes; we just flip
+ * `.hidden` on each group. */
+function onPresetTechniqueChange() {
+  const technique = (val('newPresetTechnique') || 'CV').toUpperCase();
+  const cvVisible  = (technique === 'CV');
+  document.querySelectorAll('.cv-only-field').forEach(el => {
+    el.classList.toggle('hidden', !cvVisible);
+  });
+  document.querySelectorAll('.swv-only-field').forEach(el => {
+    el.classList.toggle('hidden',  cvVisible);
+  });
 }
 
 /* Visibility for the drop-detect-method/threshold fields based on the
@@ -947,12 +1306,18 @@ function onPresetDropMethodChange() {
 
 function clearPresetForm() {
   state.editingPresetId = null;
+  // Reset every field (CV + SWV + common) so a fresh "Add preset"
+  // doesn't inherit values from a previous edit.
   ['newPresetName','newPresetVoltageThreshold','newPresetN','newPresetScanRate',
    'newPresetEBegin','newPresetEv1','newPresetEv2','newPresetStep',
    'newPresetPretreatS','newPresetRange','newPresetStartCountdown',
-   'newPresetPostDropSettle']
+   'newPresetPostDropSettle',
+   'newPresetEEnd','newPresetEAmp','newPresetFreq','newPresetEDep','newPresetTDep']
     .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const drEl = document.getElementById('newPresetDoReverse');
+  if (drEl) drEl.checked = false;
   // Restore sensible defaults
+  setIfExists('newPresetTechnique', 'CV');
   setIfExists('newPresetVoltageThreshold', 30);
   setIfExists('newPresetN', 3);
   setIfExists('newPresetScanRate', 0.1);
@@ -962,6 +1327,11 @@ function clearPresetForm() {
   setIfExists('newPresetStep', 0.01);
   setIfExists('newPresetPretreatS', 3);
   setIfExists('newPresetRange', '100u');
+  setIfExists('newPresetEEnd', 1.0);
+  setIfExists('newPresetEAmp', 0.025);
+  setIfExists('newPresetFreq', 25);
+  setIfExists('newPresetEDep', 0.0);
+  setIfExists('newPresetTDep', 0.0);
   // Reset the PSTrace-style range picker to a sensible default span.
   initRangePickerFrom({
     current_range: '100n', auto_range_low: '100n',
@@ -976,6 +1346,7 @@ function clearPresetForm() {
   const dmSel = document.getElementById('newPresetDropMethod');
   if (dmSel) dmSel.value = 'voltage';
   onPresetTriggerChange();
+  onPresetTechniqueChange();   // reset CV/SWV field visibility
   // Update Add button label
   const btn = document.getElementById('btnAddPreset');
   if (btn) btn.textContent = 'Add preset';
@@ -996,7 +1367,7 @@ async function addModel() {
     notes: val('newModelNotes') || '',
     set_default: chk('newModelDefault'),
   });
-  await loadModels(); preparePhase4();
+  await refreshModels();
   ['newModelName','newModelPath','newModelNotes'].forEach(id => document.getElementById(id).value = '');
   toast('Model registered.', 'success');
 }
@@ -1023,11 +1394,18 @@ async function connectDevice() {
       operator: op,
       device_id: state.selectedDeviceId,
       preset_id: state.selectedPresetId,
+      // v0.2.0: which sample-identification form variant should Phase 1
+      // render — "clinical" (the v0.1.15 hospital fields) or "standard"
+      // (calibration / standard-solution fields).
+      sample_id_preset: getSampleIdPreset(),
     });
     if (!d.ok) {
       errEl.textContent = d.error || 'Failed to register session.';
       errEl.classList.remove('hidden'); return;
     }
+    // v0.2.0: cache the operator name client-side so the Sequence
+    // batch table and header pill can show it without re-fetching.
+    state.operator = op;
   } catch (e) {
     errEl.textContent = e.message;
     errEl.classList.remove('hidden'); return;
@@ -1145,11 +1523,51 @@ async function connectDevice() {
 }
 
 /* Step 2 of 2: navigate to Sample identification.  No more auto-connect. */
+/* v0.2.0: which run mode the operator picked in Configuration. */
+function getRunMode() {
+  const sel = document.getElementById('fRunMode');
+  return (sel && sel.value) || 'single';
+}
+
+/* v0.2.0: hide/show the Experiment preset card based on Run mode.
+ * Single mode → preset is picked here (existing behaviour).
+ * Sequence mode → preset is picked per-batch on the Sequence page,
+ * so the Configuration card is hidden to avoid implying the global
+ * preset has any effect. */
+function applyRunModeUI() {
+  const isSeq = getRunMode() === 'sequence';
+  // Hide the Configuration "Experiment preset" card in Sequence mode —
+  // preset is picked per batch in Build.
+  const card = document.getElementById('presetCard');
+  if (card) card.classList.toggle('hidden', isSeq);
+  // Show the Build sidebar phase only in Sequence mode.
+  document.querySelectorAll('.phase-seq').forEach(el => {
+    el.classList.toggle('hidden', !isSeq);
+  });
+}
+
 function startSession() {
   if (!state.connectionOpen) {
     const errEl = document.getElementById('sessionError');
     errEl.textContent = 'Click Connect first.';
     errEl.classList.remove('hidden');
+    return;
+  }
+  // v0.2.0: branch on run mode.
+  // Single mode → Phase 1 (Sample Identification) directly.
+  // Sequence mode → Build phase (in-page Sequence builder); after
+  // Confirm there, we advance to Phase 1 with the first sample's data
+  // prefilled and loop through the rest after each measurement.
+  if (getRunMode() === 'sequence') {
+    // Always start a fresh Build view at the top of a new session —
+    // any leftover batches from a previous (cancelled) session are
+    // already cleared by confirmCancelSession; resetting here too
+    // covers the "Reset" button path.
+    seqState.batches = [];
+    seqState.draft   = { batchId: "", samplePrefix: "", presetId: "" };
+    seqState.cursor  = { mode: null, batchIdx: -1, sampleIdx: -1 };
+    seqInit();          // populate preset dropdown
+    goPhase('seq-build');
     return;
   }
   goPhase(1);
@@ -1255,13 +1673,23 @@ function simulateScan() { lookupSample('DP-0001-V2'); }
  * know about the active sample (typically the QR scan result), so the
  * operator can edit / annotate without retyping everything. */
 function openManualSampleEntry() {
+  // v0.2.0: when invoked from Sequence Build, seqEditSample has already
+  // prepared the form (cleared the previous sample's data, pre-filled
+  // Sample ID with the row's name).  Skip the state.sample-based
+  // pre-fill so we don't overwrite it with stale data from the previous
+  // entry — that's what was making sample-2's form show sample-1's info.
+  if (typeof seqState !== 'undefined' &&
+      seqState.cursor && seqState.cursor.mode === 'build') {
+    show('modalManualSample');
+    return;
+  }
   const meta = state.sample || {};
   document.getElementById('manSampleId').value  = meta.sample_id || '';
   document.getElementById('manDonor').value     = meta.donor_pouch || '';
   document.getElementById('manDate').value      = meta.collection_date || '';
   document.getElementById('manStorage').value   = meta.storage_location || '';
   document.getElementById('manAliquot').value   = meta.aliquot_purpose || '';
-  document.getElementById('manHospital').value  = meta.hospital_site || '';
+  document.getElementById('manClinicalSite').value = meta.clinical_site || meta.hospital_site || '';
   document.getElementById('manNotes').value     = meta.notes || '';
   show('modalManualSample');
 }
@@ -1270,14 +1698,17 @@ function openManualSampleEntry() {
 async function resetSampleScan() {
   await postJSON('/api/session/reset_sample', {});
   state.sample = null;
-  document.getElementById('confirmCard').classList.add('hidden');
+  state.scannedQrImage = null;
+  // v0.2.0: confirmCard stays visible — reset to "AWAITING SCAN"
+  // placeholder and put the right-side frame back into live-video mode.
+  renderConfirmPlaceholder();
   document.getElementById('btnConfirmSample').disabled = true;
   // Re-show the mobile inline form so the operator can enter again.
   const inl = document.getElementById('inlineManualForm');
   if (inl) {
     inl.classList.remove('hidden');
     // Clear the previous values
-    ['SampleId','Donor','Date','Storage','Aliquot','Hospital','Notes'].forEach(k => {
+    ['SampleId','Donor','Date','Storage','Aliquot','ClinicalSite','Notes'].forEach(k => {
       const el = document.getElementById('inl_man' + k);
       if (el) el.value = '';
     });
@@ -1290,18 +1721,39 @@ async function resetSampleScan() {
 async function submitManualSample(prefix) {
   prefix = prefix || '';
   const v = (id) => val(prefix + id);
-  const sid = v('manSampleId');
-  if (!sid) { toast('Sample ID is required.', 'error'); return; }
-  try {
-    const d = await postJSON('/api/sample/manual', {
+  const variant = getSampleIdPreset();
+  let payload;
+  let sid;
+  if (variant === 'standard') {
+    sid = v('manStdSampleId');
+    if (!sid) { toast('Sample ID is required.', 'error'); return; }
+    payload = {
       sample_id: sid,
+      sample_id_preset: 'standard',
+      sample_type: val(prefix + 'manStdSampleType') || 'sample',
+      concentration_value: v('manStdConcValue'),
+      concentration_unit:  val(prefix + 'manStdConcUnit'),
+      prep_date: v('manStdPrepDate'),
+      lot: v('manStdLot'),
+      solvent: v('manStdSolvent'),
+      notes: v('manStdNotes'),
+    };
+  } else {
+    sid = v('manSampleId');
+    if (!sid) { toast('Sample ID is required.', 'error'); return; }
+    payload = {
+      sample_id: sid,
+      sample_id_preset: 'clinical',
       donor_pouch: v('manDonor'),
       collection_date: v('manDate'),
       storage_location: v('manStorage'),
       aliquot_purpose: v('manAliquot'),
-      hospital_site: v('manHospital'),
+      clinical_site: v('manClinicalSite'),
       notes: v('manNotes'),
-    });
+    };
+  }
+  try {
+    const d = await postJSON('/api/sample/manual', payload);
     if (!d.ok) { toast(d.error || 'Manual entry failed', 'error'); return; }
     state.sample = d.meta;
     setText('hdrSampleId', sid);
@@ -1315,6 +1767,19 @@ async function submitManualSample(prefix) {
     stopQrScanner();
     toast('Sample registered manually.', 'success');
   } catch (e) { toast(e.message, 'error'); }
+}
+
+/* v0.2.0: show/hide the Sample Identification form variants based on
+ * the radio selection in Configuration.  Called whenever the radio
+ * changes and on initial render of Phase 1. */
+function applySampleIdPresetUI() {
+  const variant = getSampleIdPreset();   // "clinical" | "standard"
+  document.querySelectorAll('.sample-form-clinical').forEach(el => {
+    el.classList.toggle('hidden', variant !== 'clinical');
+  });
+  document.querySelectorAll('.sample-form-standard').forEach(el => {
+    el.classList.toggle('hidden', variant !== 'standard');
+  });
 }
 
 /* Step 1: pop the non-blocking confirm modal.  We can't use the
@@ -1341,7 +1806,11 @@ async function confirmCancelSession() {
   }
   // Backend: wipe everything
   await postJSON('/api/session/reset_all', {});
-  // Clear local state
+  // v0.2.x round 9: full reset — Cancel session should leave the page
+  // in the same shape as a fresh tab.  This means resetting EVERY
+  // piece of in-memory state (incl. selectedPresetId / selectedDeviceId
+  // / sample-id-preset / run-mode), every form input on Configuration,
+  // and every Sequence-mode artefact.
   state.measuredSamples = [];
   state.selectedAnalysisSampleId = null;
   state.inferenceSampleTicks = new Set();
@@ -1356,11 +1825,40 @@ async function confirmCancelSession() {
   state.connectionOpen = false;
   state.measureInProgress = false;
   state.measureFinished = false;
+  state.operator = '';
+  state.selectedPresetId = null;
+  state.selectedDeviceId = null;
+  state.selectedModelId  = null;
+  state.eventLog = [];
+  state.editingPresetId = null;
+  state.editingDeviceId = null;
+  // Sequence state
+  if (typeof seqState !== 'undefined') {
+    seqState.batches = [];
+    seqState.draft   = { batchId: "", samplePrefix: "", presetId: "" };
+    seqState.cursor  = { mode: null, batchIdx: -1, sampleIdx: -1 };
+    seqState.__seqWired = false;   // re-bind dropdown listeners on re-init
+  }
+  // ── Configuration form fields back to fresh-app defaults ──
+  const fOper = document.getElementById('fOperator');
+  if (fOper) fOper.value = '';
+  const fSampIdPreset = document.getElementById('fSampleIdPreset');
+  if (fSampIdPreset) fSampIdPreset.value = 'clinical';
+  const fRunMode = document.getElementById('fRunMode');
+  if (fRunMode) fRunMode.value = 'single';
   // Re-enable Connect button, disable Begin session
   const cb = document.getElementById('btnConnectDevice');
   if (cb) { cb.disabled = false; cb.textContent = 'Connect'; }
   const sb = document.getElementById('btnStartSession');
   if (sb) sb.disabled = true;
+  // Re-fetch presets/devices/models so dropdowns reflect server's new
+  // empty-session state (default selections, no leftover edits).
+  try { await Promise.all([loadPresets(), loadDevices(), loadModels()]); }
+  catch (e) { /* offline — keep going */ }
+  populatePhase0();
+  applyRunModeUI();
+  applySampleIdPresetUI();
+  applyMeasurementLock();
   // Clear DOM artefacts that aren't tied to state
   const cc = document.getElementById('confirmCard');
   if (cc) cc.classList.add('hidden');
@@ -1369,8 +1867,11 @@ async function confirmCancelSession() {
   const confirmBtn = document.getElementById('btnConfirmSample');
   if (confirmBtn) confirmBtn.disabled = true;
   setText('hdrSampleId', '—');
+  setText('metaPreset', '—');
+  setText('metaOperator', '—');
+  setText('metaDevice', '—');
   goPhase(0);
-  toast('Session cancelled.', 'success');
+  toast('Session cancelled — all state cleared.', 'success');
 }
 
 /* Phase 2 currently has no cancel-session button (it lives on Phase 1 now);
@@ -1414,28 +1915,126 @@ function renderConfirmCard(meta, source) {
   }
 
   data.innerHTML = '';
-  for (const [label, key] of [
-    ['Sample ID','sample_id'], ['Donor pouch','donor_pouch'],
-    ['Collection date','collection_date'], ['Storage location','storage_location'],
-    ['Aliquot purpose','aliquot_purpose'], ['Hospital site','hospital_site'],
-  ]) {
+  // v0.2.0: pick the row layout based on the sample's identification
+  // variant (clinical / standard).  LIMS-sourced samples are always
+  // clinical (donor metadata).  Manually entered samples carry an
+  // explicit `sample_id_preset` from /api/sample/manual.
+  const variant = meta.sample_id_preset || getSampleIdPreset();
+  let rows;
+  if (variant === 'standard') {
+    const conc = (meta.concentration_value && meta.concentration_unit)
+      ? `${meta.concentration_value} ${meta.concentration_unit}`
+      : '';
+    const decorated = { ...meta, _conc: conc };
+    rows = [
+      ['Sample ID',     'sample_id'],
+      ['Sample type',   'sample_type'],   // round 6: was 'solution_name'
+      ['Concentration', '_conc'],
+      ['Prep date',     'prep_date'],
+      ['Lot / batch',   'lot'],
+      ['Solvent',       'solvent'],
+      ['Notes',         'notes'],         // round 8: surface operator notes
+    ];
+    for (const [label, key] of rows) {
+      const row = document.createElement('div');
+      row.className = 'confirm-row';
+      row.innerHTML = `<span class="key">${label}</span><span class="val">${escape(decorated[key] || '—')}</span>`;
+      data.appendChild(row);
+    }
+  } else {
+    rows = [
+      ['Sample ID',        'sample_id'],
+      ['Donor pouch',      'donor_pouch'],
+      ['Collection date',  'collection_date'],
+      ['Storage location', 'storage_location'],
+      ['Aliquot purpose',  'aliquot_purpose'],
+      ['Clinical site',    'clinical_site'],
+      ['Notes',            'notes'],
+    ];
+    for (const [label, key] of rows) {
+      const row = document.createElement('div');
+      row.className = 'confirm-row';
+      row.innerHTML = `<span class="key">${label}</span><span class="val">${escape(meta[key] || '—')}</span>`;
+      data.appendChild(row);
+    }
+  }
+  // v0.2.0: drive the right-side QR frame.  After a successful scan
+  // the captured PNG goes here; for a manual entry we show the fallback
+  // text inside the same compact frame.
+  if (source === 'MANUAL') setQrFrameState('manual');
+  else if (state.scannedQrImage) setQrFrameState('scanned', state.scannedQrImage);
+  else setQrFrameState('scanned'); // LIMS lookup — no img, but card still confirms
+
+  card.classList.remove('hidden');
+}
+
+/* v0.2.0 — drive the compact QR frame's three-way visual state.
+ *   "scanning" → live <video> visible, corner brackets + scanline
+ *                animating; this is the default before any sample is
+ *                identified.
+ *   "scanned"  → captured QR image (or blank dark frame for LIMS) shown
+ *                in place of the video; brackets/scanline hidden.
+ *   "manual"   → fallback text "QR image unavailable (manual entry)"
+ *                shown in place of video/image. */
+function setQrFrameState(mode, imgSrc) {
+  const frame = document.getElementById('qrFrameCompact');
+  const video = document.getElementById('qrVideo');
+  const img   = document.getElementById('scannedQrImage');
+  const fb    = document.getElementById('scannedQrFallback');
+  if (!frame || !video || !img || !fb) return;
+  frame.classList.remove('scanned', 'manual');
+  if (mode === 'scanned') {
+    frame.classList.add('scanned');
+    video.classList.add('hidden');
+    fb.classList.add('hidden');
+    if (imgSrc) {
+      img.src = imgSrc;
+      img.classList.remove('hidden');
+    } else {
+      img.classList.add('hidden');
+    }
+  } else if (mode === 'manual') {
+    frame.classList.add('manual');
+    video.classList.add('hidden');
+    img.classList.add('hidden');
+    fb.classList.remove('hidden');
+  } else {
+    // 'scanning' (default)
+    video.classList.remove('hidden');
+    img.classList.add('hidden');
+    fb.classList.add('hidden');
+  }
+}
+
+/* Render the placeholder confirm card before any sample is identified —
+ * shows "—" in every field and an AWAITING SCAN badge.  Called by
+ * goPhase(1) when state.sample is empty. */
+function renderConfirmPlaceholder() {
+  const data = document.getElementById('confirmData');
+  const badge = document.getElementById('confirmBadge');
+  const freshTag = document.getElementById('confirmFreshTag');
+  if (!data || !badge) return;
+  badge.textContent = 'AWAITING SCAN';
+  badge.style.background = 'var(--indigo-light)';
+  badge.style.color      = 'var(--indigo)';
+  if (freshTag) {
+    freshTag.textContent = 'Position the cryovial in the frame, or use Manual entry';
+    freshTag.className = 'confirm-fresh-tag fresh';
+  }
+  data.innerHTML = '';
+  const variant = getSampleIdPreset();
+  const rows = (variant === 'standard') ? [
+    'Sample ID', 'Sample type', 'Concentration', 'Prep date', 'Lot / batch', 'Solvent', 'Notes',
+  ] : [
+    'Sample ID', 'Donor pouch', 'Collection date', 'Storage location', 'Aliquot purpose', 'Clinical site', 'Notes',
+  ];
+  for (const label of rows) {
     const row = document.createElement('div');
     row.className = 'confirm-row';
-    row.innerHTML = `<span class="key">${label}</span><span class="val">${escape(meta[key] || '—')}</span>`;
+    row.innerHTML = `<span class="key">${label}</span><span class="val">—</span>`;
     data.appendChild(row);
   }
-  // Scanned QR image — show snapshot if we have one, otherwise fallback
-  const img = document.getElementById('scannedQrImage');
-  const fb  = document.getElementById('scannedQrFallback');
-  if (state.scannedQrImage) {
-    img.src = state.scannedQrImage;
-    img.style.display = 'block';
-    fb.style.display = 'none';
-  } else {
-    img.style.display = 'none';
-    fb.style.display = 'block';
-  }
-  card.classList.remove('hidden');
+  setQrFrameState('scanning');
 }
 
 /* -------------------------------------------------------------------------
@@ -1537,6 +2136,7 @@ async function startMeasurement(opts) {
 
   state.measureInProgress = true;
   state.measureFinished = false;
+  applyMeasurementLock();   // round 9: lock nav while running
   document.getElementById('phase3InProgress').classList.remove('hidden');
   document.getElementById('phase3Finished').classList.add('hidden');
   // Show the Phase 2 Cancel row whenever a measurement is in flight.
@@ -1605,6 +2205,16 @@ function handleSseEvent(evt) {
       }
       break;
     case 'drop_armed':
+      // v0.2.x round 6: server reports the technique the chip is about
+      // to run.  If the live chart was initialised for a different
+      // technique (because frontend's activeTechnique() was stale), tear
+      // it down and re-init now — otherwise SWV samples will hit a chart
+      // that only has CV traces (or vice-versa) and Plotly throws
+      // "all values in indices must be integers".
+      if (evt.technique && state.chartTechnique &&
+          evt.technique !== state.chartTechnique) {
+        try { initLiveChart(evt.technique); } catch (e) { console.warn(e); }
+      }
       if (evt.use_drop_detect) {
         // Stay on Phase 2; flip the indicator to green "ready".
         const illust = document.getElementById('loadIllustration');
@@ -1645,9 +2255,58 @@ function handleSseEvent(evt) {
     case 'error':
       toast(evt.message || 'Measurement error', 'error');
       setMeasurementStatus('error', 'Error');
-      goPhase(2);
+      // v0.2.0: in Sequence run mode, give the operator a Skip /
+      // Re-measure choice instead of silently going back to Phase 2.
+      if (seqState.cursor && seqState.cursor.mode === 'run') {
+        seqShowFailureChoice(evt.message || 'Measurement error');
+      } else {
+        goPhase(2);
+      }
       break;
   }
+}
+
+/* v0.2.0: Sequence-run failure prompt — pops a non-blocking dialog with
+ * Skip / Re-measure buttons.  Skip marks the sample as failed and jumps
+ * to the next sample's Phase 1; Re-measure returns to Phase 2 (Sample
+ * Loading) for another attempt at the same sample. */
+function seqShowFailureChoice(message) {
+  // Build a lightweight choice modal on the fly so we don't have to add
+  // a new <div> to index.html.  Removed when either button is clicked.
+  let m = document.getElementById('seqFailModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'seqFailModal';
+    m.className = 'modal-backdrop';
+    m.innerHTML = `
+      <div class="modal" style="max-width: 460px;">
+        <div class="modal-header">
+          <h2 style="color: var(--red);">Measurement failed</h2>
+        </div>
+        <div class="modal-body">
+          <p style="color: var(--text-body);" id="seqFailMsg"></p>
+          <p style="color: var(--text-muted); font-size: 13px;">
+            Skip this sample and continue with the next one in the sequence,
+            or load the same sample again and re-measure.
+          </p>
+          <div class="btn-row">
+            <button class="btn btn-secondary" id="seqFailSkip">Skip sample</button>
+            <button class="btn" id="seqFailRetry">Re-measure</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+    document.getElementById('seqFailSkip').addEventListener('click', () => {
+      m.remove();
+      seqAdvanceToNextRun('failed_skip');
+    });
+    document.getElementById('seqFailRetry').addEventListener('click', () => {
+      m.remove();
+      goPhase(2);
+    });
+  }
+  document.getElementById('seqFailMsg').textContent = message;
+  m.classList.remove('hidden');
 }
 
 /* Status pill on the Phase 3 chart card. */
@@ -1679,6 +2338,11 @@ function cancelMeasurement() {
     state._dropDetectStandbyTimer = null;
   }
   state.measureInProgress = false;
+  applyMeasurementLock();   // round 9: re-enable nav after cancel
+  // v0.2.x round 10: cancelling rewinds the workflow to Phase 2 (Sample
+  // Loading) — Phase 3-7 should not be marked "done" because the
+  // measurement never finished.
+  resetPhaseProgress(2);
   toast('Measurement cancelled.', 'success');
   goPhase(2);    // immediately back to sample loading
 }
@@ -1686,12 +2350,14 @@ function cancelMeasurement() {
 function cancelledMeasurement(evt) {
   state.measureInProgress = false;
   state.measureFinished = false;
+  applyMeasurementLock();
   setMeasurementStatus('cancelled', 'Cancelled');
 }
 
 function finishMeasurement(evt) {
   state.measureInProgress = false;
   state.measureFinished = true;
+  applyMeasurementLock();
   document.getElementById('progressFill').style.width = '100%';
   setText('progressStatus',
     `${evt.n_samples} samples acquired · saved to ${evt.csv_path}`);
@@ -1737,10 +2403,25 @@ function totalCyclesFromPreset() {
   return Math.max(1, parseInt(n, 10));
 }
 
-function initLiveChart() {
+/* v0.2.0: which technique is the active preset?  Drives the live-plot
+ * layout (CV = per-cycle traces, SWV = three traces i_fwd / i_rev /
+ * i_diff).  Falls back to "CV" when no preset is selected. */
+function activeTechnique() {
+  const p = state.presets.items.find(x => x.id === state.selectedPresetId)
+         || state.presets.items.find(x => x.is_default);
+  return ((p && p.technique) || 'CV').toUpperCase();
+}
+
+function initLiveChart(techniqueOverride) {
   state.chartData = { x: [], y: [], scans: [] };
   state.chartScanIndex = new Map();
   state.chartTotalCycles = totalCyclesFromPreset();
+  // v0.2.x round 6: caller can pass an explicit technique (e.g. from
+  // the SSE drop_armed event) to override the activeTechnique() guess.
+  // This lets us re-init the chart mid-flight if the actual measurement
+  // turned out to use a different technique than the operator's
+  // dropdown selection suggested.
+  state.chartTechnique = (techniqueOverride || activeTechnique() || 'CV').toUpperCase();
   const layout = {
     margin: { t: 10, l: 70, r: 20, b: 50 },
     xaxis: { title: 'Potential (V)', zeroline: true, gridcolor: '#E8EBF2' },
@@ -1753,19 +2434,43 @@ function initLiveChart() {
     plot_bgcolor: '#FFFFFF',
     font: { family: '-apple-system, Inter, sans-serif', color: '#4A5275' },
   };
-  // Pre-create one trace per expected cycle so the legend shows the full
-  // set up front. New traces will be added on the fly if more arrive.
-  const initial = [];
-  for (let i = 0; i < state.chartTotalCycles; i++) {
-    const c = winterColor(state.chartTotalCycles === 1
-      ? 0 : i / (state.chartTotalCycles - 1));
-    initial.push({
-      x: [], y: [], mode: 'lines+markers', type: 'scatter',
-      name: `Cycle ${i + 1}`,
-      line: { color: c, width: 2 },
-      marker: { color: c, size: 4 },
-    });
-    state.chartScanIndex.set(i, i);
+
+  let initial;
+  if (state.chartTechnique === 'SWV') {
+    // SWV: three fixed traces (forward, reverse, difference) over E.
+    // No "cycles" — SWV is a one-direction sweep.  Legend entries
+    // live in chartScanIndex under sentinel keys so appendSample can
+    // route each evt's three currents to the right trace.
+    initial = [
+      { x: [], y: [], mode: 'lines+markers', type: 'scatter',
+        name: 'I forward', line: { color: '#5258BF', width: 2 },
+        marker: { color: '#5258BF', size: 4 } },
+      { x: [], y: [], mode: 'lines+markers', type: 'scatter',
+        name: 'I reverse', line: { color: '#D97706', width: 2 },
+        marker: { color: '#D97706', size: 4 } },
+      { x: [], y: [], mode: 'lines+markers', type: 'scatter',
+        name: 'I difference', line: { color: '#16A34A', width: 2.5 },
+        marker: { color: '#16A34A', size: 4 } },
+    ];
+    state.chartScanIndex.set('swv_fwd',  0);
+    state.chartScanIndex.set('swv_rev',  1);
+    state.chartScanIndex.set('swv_diff', 2);
+  } else {
+    // CV: pre-create one trace per expected cycle so the legend shows
+    // the full set up front.  New traces are added on the fly if more
+    // scans arrive than the preset declared.
+    initial = [];
+    for (let i = 0; i < state.chartTotalCycles; i++) {
+      const c = winterColor(state.chartTotalCycles === 1
+        ? 0 : i / (state.chartTotalCycles - 1));
+      initial.push({
+        x: [], y: [], mode: 'lines+markers', type: 'scatter',
+        name: `Cycle ${i + 1}`,
+        line: { color: c, width: 2 },
+        marker: { color: c, size: 4 },
+      });
+      state.chartScanIndex.set(i, i);
+    }
   }
   Plotly.newPlot('liveChart', initial, layout,
                  { displayModeBar: false, responsive: true });
@@ -1790,8 +2495,13 @@ function initLiveChart() {
 }
 
 function resetChart() {
-  state.chartData = { x: [], y: [], scans: [] };
-  state.chartScanIndex = new Map();
+  // v0.2.x round 6: only reset the progress-bar UI here.  Wiping
+  // chartData / chartScanIndex would also wipe the SWV trace mapping
+  // (swv_fwd/rev/diff) that initLiveChart just set up — which is what
+  // caused "appendSample: SWV chart not initialised, dropping point"
+  // when the chart was init'd, then immediately reset before samples
+  // could arrive.  initLiveChart already empties chartData on each
+  // entry to Phase 3, so the data-structure wipe here was redundant.
   document.getElementById('progressFill').style.width = '0%';
   setText('progressText', '0 samples');
   setText('progressStatus', '—');
@@ -1821,10 +2531,44 @@ function appendSample(evt) {
   state.chartData.y.push(evt.current_a);
   state.chartData.scans.push(evt.scan);
   if (state.chart) {
-    const idx = _ensureTraceForScan(evt.scan || 0);
-    Plotly.extendTraces('liveChart', {
-      x: [[evt.potential_v]], y: [[evt.current_a]],
-    }, [idx]);
+    if (state.chartTechnique === 'SWV') {
+      // SWV: route the three currents from one event into three traces.
+      // i_fwd / i_rev come from `pck_add f` / `pck_add r` on the chip;
+      // i_diff is computed here as fwd − rev when both are present.
+      // v0.2.x round 6: defensive — if chartScanIndex doesn't have the
+      // SWV keys (chart was initialised as CV but technique mismatched
+      // mid-run), bail out silently rather than feeding undefined
+      // indices to Plotly.extendTraces (→ "indices must be integers").
+      const idxFwd  = state.chartScanIndex.get('swv_fwd');
+      const idxRev  = state.chartScanIndex.get('swv_rev');
+      const idxDiff = state.chartScanIndex.get('swv_diff');
+      if (typeof idxDiff !== 'number') {
+        console.warn('appendSample: SWV chart not initialised, dropping point');
+        return;
+      }
+      const fwd = (typeof evt.current_fwd_a === 'number') ? evt.current_fwd_a : null;
+      const rev = (typeof evt.current_rev_a === 'number') ? evt.current_rev_a : null;
+      const diff = (fwd !== null && rev !== null) ? (fwd - rev) : evt.current_a;
+      const traces = [];
+      const xs = [];
+      const ys = [];
+      if (fwd !== null && typeof idxFwd === 'number') {
+        traces.push(idxFwd);
+        xs.push([evt.potential_v]); ys.push([fwd]);
+      }
+      if (rev !== null && typeof idxRev === 'number') {
+        traces.push(idxRev);
+        xs.push([evt.potential_v]); ys.push([rev]);
+      }
+      traces.push(idxDiff);
+      xs.push([evt.potential_v]); ys.push([diff]);
+      Plotly.extendTraces('liveChart', { x: xs, y: ys }, traces);
+    } else {
+      const idx = _ensureTraceForScan(evt.scan || 0);
+      Plotly.extendTraces('liveChart', {
+        x: [[evt.potential_v]], y: [[evt.current_a]],
+      }, [idx]);
+    }
   }
   setText('progressText', `${state.chartData.x.length} samples`);
   // Progress bar — based on expected sample count if we know it
@@ -1894,13 +2638,44 @@ async function preparePhase4() {
 
 function renderInferenceSampleTable() {
   const tbody = document.getElementById('infSampleBody');
+  const thead = document.getElementById('infSampleHead');
+  if (!tbody || !thead) return;
+  // v0.2.x round 9: adaptive columns by sample-identification mode.
+  // Clinical → Donor / Collection / Site.  Standard → Type / Conc. / Lot.
+  const isClinical = (getSampleIdPreset() === 'clinical');
+  thead.innerHTML = isClinical ? `
+    <tr>
+      <th class="cb-cell">
+        <input type="checkbox" id="infSampleAll"
+               onchange="toggleAllInferenceSamples()" checked />
+      </th>
+      <th>Sample</th>
+      <th class="ana-col-type">Donor</th>
+      <th class="ana-col-conc">Collection</th>
+      <th class="ana-col-lot">Site</th>
+      <th>Status</th>
+      <th>Acquired</th>
+      <th>—</th>
+    </tr>` : `
+    <tr>
+      <th class="cb-cell">
+        <input type="checkbox" id="infSampleAll"
+               onchange="toggleAllInferenceSamples()" checked />
+      </th>
+      <th>Sample</th>
+      <th class="ana-col-type">Type</th>
+      <th class="ana-col-conc">Conc.</th>
+      <th class="ana-col-lot">Lot</th>
+      <th>Status</th>
+      <th>Acquired</th>
+      <th>—</th>
+    </tr>`;
   const all = document.getElementById('infSampleAll');
-  if (!tbody || !all) return;
   tbody.innerHTML = '';
   if (!state.measuredSamples.length) {
     tbody.innerHTML =
-      '<tr><td colspan="5" style="padding:16px;color:var(--text-muted);">No acquisitions yet.</td></tr>';
-    all.checked = false;
+      '<tr><td colspan="8" style="padding:16px;color:var(--text-muted);">No acquisitions yet.</td></tr>';
+    if (all) all.checked = false;
     return;
   }
   for (const s of state.measuredSamples) {
@@ -1908,6 +2683,21 @@ function renderInferenceSampleTable() {
     const status = s.analyzed
       ? `<span class="banner-tag ${s.banner}">${s.banner.toUpperCase()}</span>`
       : `<span class="banner-tag pending">PENDING</span>`;
+    const meta = s.sample_meta || {};
+    let metaCells;
+    if (isClinical) {
+      metaCells = `
+        <td class="ana-col-type">${escape(meta.donor_pouch     || '—')}</td>
+        <td class="ana-col-conc">${escape(meta.collection_date || '—')}</td>
+        <td class="ana-col-lot">${escape(meta.clinical_site    || '—')}</td>`;
+    } else {
+      const conc = (meta.concentration_value && meta.concentration_unit)
+        ? `${meta.concentration_value} ${meta.concentration_unit}` : '—';
+      metaCells = `
+        <td class="ana-col-type">${escape(meta.sample_type || '—')}</td>
+        <td class="ana-col-conc">${escape(conc)}</td>
+        <td class="ana-col-lot">${escape(meta.lot         || '—')}</td>`;
+    }
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class="cb-cell">
@@ -1916,6 +2706,7 @@ function renderInferenceSampleTable() {
                onchange="onInferenceSampleTick('${escape(s.sample_id)}', this.checked)" />
       </td>
       <td><strong>${escape(s.sample_id)}</strong></td>
+      ${metaCells}
       <td>${status}</td>
       <td class="muted">${escape(s.measured_at)}</td>
       <td>
@@ -1924,7 +2715,7 @@ function renderInferenceSampleTable() {
     tbody.appendChild(tr);
   }
   // "Tick all" reflects whether every row is ticked
-  all.checked = state.measuredSamples.every(
+  if (all) all.checked = state.measuredSamples.every(
     s => state.inferenceSampleTicks.has(s.sample_id));
 }
 
@@ -2711,7 +3502,7 @@ async function reMeasureSample(sid) {
   const sample = (state.measuredSamples || []).find(s => s.sample_id === sid);
   if (!confirm(
         `Re-measure sample "${sid}"?\n\n` +
-        `Its previous CV data will be deleted, then you'll go back to ` +
+        `Its previous measurement data will be deleted, then you'll go back to ` +
         `Sample Identification with the same sample info pre-filled.\n` +
         `The new measurement will replace the old one.`)) return;
   try {
@@ -2721,6 +3512,10 @@ async function reMeasureSample(sid) {
     await loadMeasuredSamples();
     renderBatchList();
     logSampleEvent('remeasured', sid);
+    // v0.2.x round 10: re-measuring rewinds back to Phase 1 — Phase 4-7
+    // pills should clear so the operator doesn't think the rerun is
+    // already finished.
+    resetPhaseProgress(1);
 
     // 2. Pre-fill Phase 1 with the original sample metadata.
     const meta = (sample && sample.sample_meta) || {};
@@ -2755,7 +3550,7 @@ async function reMeasureSample(sid) {
       'inl_manDate':      fullMeta.collection_date || '',
       'inl_manStorage':   fullMeta.storage_location || '',
       'inl_manAliquot':   fullMeta.aliquot_purpose || '',
-      'inl_manHospital':  fullMeta.hospital_site || '',
+      'inl_manClinicalSite': fullMeta.clinical_site || fullMeta.hospital_site || '',
       'inl_manNotes':     fullMeta.notes || '',
     };
     for (const [id, v] of Object.entries(fields)) {
@@ -2802,10 +3597,123 @@ async function signAndSave() {
       `<div class="banner ok" style="margin: 0;">Saved ${d.n_bundles} bundle(s) to <code>${escape(d.export_dir)}</code>.</div>` +
       `<div style="margin-top: 10px;">${links}</div>`;
     toast(`Saved ${d.n_bundles} bundle(s).`, 'success');
+    // v0.2.0: if we're inside a Sequence run, auto-advance to the next
+    // sample's Phase 1.  Brief delay so the operator sees the save
+    // result banner before the page navigates.
+    if (seqState.cursor && seqState.cursor.mode === 'run') {
+      setTimeout(() => seqAdvanceToNextRun('done'), 1500);
+    }
   } catch (e) { toast(e.message, 'error'); }
 }
 
+/* v0.2.x round 10: reset the workflow-bar progress when the operator
+ * loops back to an earlier phase (next sample, re-measure, cancel
+ * measurement, end sequence).  Without this the "done" green pills
+ * for downstream phases stay lit from the previous sample, making it
+ * look as if the new sample is already half-finished.  Pass the phase
+ * the operator is RETURNING TO; everything past it gets greyed out. */
+function resetPhaseProgress(returnToPhase) {
+  const n = (typeof returnToPhase === 'number') ? returnToPhase : 1;
+  state.maxPhaseReached = n;
+  // Re-render sidebar — re-use goPhase's logic by triggering its
+  // class-toggling pass without changing the active screen.  Simplest
+  // is to call goPhase(state.phase) but that would scroll-to-top etc.
+  // Just toggle the classes inline.
+  document.querySelectorAll('.phase').forEach(el => {
+    el.classList.remove('done', 'locked');
+    const ph = el.getAttribute('data-phase');
+    if (ph === 'seq-build') return;   // handled separately by applyRunModeUI
+    const numPh = parseInt(ph, 10);
+    if (Number.isNaN(numPh)) return;
+    if (numPh < state.maxPhaseReached && !el.classList.contains('active')) {
+      el.classList.add('done');
+    }
+    if (numPh > state.maxPhaseReached && !el.classList.contains('active')) {
+      el.classList.add('locked');
+    }
+  });
+}
+
+/* v0.2.x round 9: enable / disable header "Cancel session" + sidebar
+ * phase clickability based on whether a measurement is running.
+ * Called whenever measureInProgress flips, plus at boot. */
+function applyMeasurementLock() {
+  const running = !!state.measureInProgress;
+  // Header Cancel session — disabled (greyed) while measuring.
+  const hdrCancel = document.getElementById('hdrCancelSession');
+  if (hdrCancel) hdrCancel.disabled = running;
+  // Sidebar phase items — visually mark as locked-by-measurement.
+  document.querySelectorAll('.phase').forEach(el => {
+    if (running) el.classList.add('measuring');
+    else el.classList.remove('measuring');
+  });
+}
+
+/* v0.2.x round 9: warn before page unload while a measurement is in
+ * flight.  Browsers display a generic "leave site?" prompt; the
+ * specific text is ignored on modern browsers but the prompt itself
+ * still appears, which is enough to catch accidental tab close. */
+window.addEventListener('beforeunload', (e) => {
+  if (state && state.measureInProgress) {
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
+
+/* v0.2.x round 8/10: relabel the "Run next sample" buttons (Phase 3, 4, 5)
+ * based on whether more samples are queued in the active sequence run.
+ * Single mode: always "Run next sample".
+ * Sequence with samples ahead: "Run next sample".
+ * Sequence on last sample: "End sequence" — clicking it shows a
+ * confirmation prompt then jumps straight to Finalize (Phase 5),
+ * skipping any further measurements. */
+function updateNextSampleButtons() {
+  const buttons = document.querySelectorAll('.btn-next-sample');
+  if (!buttons.length) return;
+  let label = 'Run next sample';
+  if (typeof seqState !== 'undefined' &&
+      seqState.cursor && seqState.cursor.mode === 'run') {
+    const c = seqState.cursor;
+    const nextAfter = seqFindNextSampleFrom(c.batchIdx, c.sampleIdx, true);
+    if (!nextAfter) label = 'End sequence';
+  }
+  buttons.forEach(btn => { btn.textContent = label; });
+}
+
 async function runNextSample() {
+  // v0.2.x round 10: in Sequence run mode, check if we're on the last
+  // sample.  If yes the button reads "End sequence" — prompt for
+  // confirmation then jump to Finalize (Phase 5), skipping further
+  // measurements.  If more samples remain, advance normally.
+  if (typeof seqState !== 'undefined' &&
+      seqState.cursor && seqState.cursor.mode === 'run') {
+    const c = seqState.cursor;
+    const nextAfter = seqFindNextSampleFrom(c.batchIdx, c.sampleIdx, true);
+    if (!nextAfter) {
+      // Last sample — End sequence flow
+      const ok = confirm('End sequence?\nNo more samples will be measured.');
+      if (!ok) return;
+      // Mark current sample done in seqState
+      const cur = seqState.batches[c.batchIdx]?.samples[c.sampleIdx];
+      if (cur) {
+        cur.runStatus = 'done';
+        cur.completedAt = new Date().toISOString();
+      }
+      // Clear the cursor so post-Phase-5 hooks don't try to advance again
+      seqState.cursor = { mode: null, batchIdx: -1, sampleIdx: -1 };
+      goPhase(5);
+      toast('Sequence ended — finalize the session below.', 'success');
+      return;
+    }
+    // More samples to go — re-entering Phase 1 means the workflow
+    // rewound.  Clear the green "done" pills and advance.
+    resetPhaseProgress(1);
+    seqAdvanceToNextRun('done');
+    return;
+  }
+  // Single mode: rewind workflow + reset sample for next manual scan.
+  resetPhaseProgress(1);
   // Keeps the operator's session intact and the per-sample measurement
   // results in memory; just wipes the "currently identified sample" so we
   // can scan the next cryovial.
@@ -2816,7 +3724,9 @@ async function runNextSample() {
   // re-show the previous sample's metadata and leave Confirm enabled.
   state.sample = null;
   state.scannedQrImage = null;
-  document.getElementById('confirmCard').classList.add('hidden');
+  // confirmCard stays visible — round 6 fix.  Render the placeholder
+  // so the QR scanner kicks back into live mode for the next sample.
+  if (typeof renderConfirmPlaceholder === 'function') renderConfirmPlaceholder();
   document.getElementById('btnConfirmSample').disabled = true;
   setText('hdrSampleId', '—');
   document.getElementById('hdrSample')?.classList.add('hidden');
@@ -2824,7 +3734,7 @@ async function runNextSample() {
   const inl = document.getElementById('inlineManualForm');
   if (inl) {
     inl.classList.remove('hidden');
-    ['SampleId','Donor','Date','Storage','Aliquot','Hospital','Notes'].forEach(k => {
+    ['SampleId','Donor','Date','Storage','Aliquot','ClinicalSite','Notes'].forEach(k => {
       const el = document.getElementById('inl_man' + k);
       if (el) el.value = '';
     });
@@ -2874,4 +3784,742 @@ function toast(text, kind) {
   t.className = 'toast show ' + (kind || '');
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { t.className = 'toast'; }, 2400);
+}
+
+
+/* =========================================================================
+   SEQUENCE MODE (v0.2.0)
+   =========================================================================
+   The Sequence Build phase lives in-app between Configuration and Sample
+   Identification.  Operator plans batches + samples here; Confirm advances
+   to Phase 1 (Sample Identification) with sample-1's data prefilled, and
+   each subsequent measurement loops back to Phase 1 with the next sample.
+
+   All Sequence state hangs off `seqState` to keep it isolated from the
+   single-mode `state` object.  The two never modify each other.
+========================================================================= */
+
+const seqState = {
+  batches: [],         // [{id, samplePrefix, presetId, samples:[{name,info,savedAt,runStatus,runError}]}]
+  draft:  { batchId: "", samplePrefix: "", presetId: "" },
+  // Cursor — points at the sample currently being filled (Build) or
+  // measured (Run).  `mode` decides what Confirm sample does:
+  //   "build" → save info into the batch row, bounce back to seq-build
+  //   "run"   → advance to Phase 2 (Sample Loading), measure as usual
+  //   null    → no Sequence flow active (single mode)
+  cursor: { mode: null, batchIdx: -1, sampleIdx: -1 },
+};
+
+function seqInit() {
+  // Re-populate the preset dropdown each time we enter Build (presets
+  // may have been edited under "Manage presets" since last visit).
+  seqRenderDraft();
+  seqRenderBatchesList();
+  seqRenderConfirmButton();
+  seqWireDraftListeners();
+}
+
+/* Attach input/change listeners on the "Create new batch" form once.
+ * Idempotent — guarded by `__seqWired` so we don't double-bind every
+ * time seqInit() runs. */
+function seqWireDraftListeners() {
+  if (seqState.__seqWired) return;
+  seqState.__seqWired = true;
+  const idIn  = document.getElementById('seqNewBatchId');
+  const pfIn  = document.getElementById('seqNewSamplePrefix');
+  const prSel = document.getElementById('seqNewPreset');
+  if (idIn) idIn.addEventListener('input', e => seqState.draft.batchId = e.target.value);
+  if (pfIn) pfIn.addEventListener('input', e => seqState.draft.samplePrefix = e.target.value);
+  if (prSel) prSel.addEventListener('change', e => {
+    seqState.draft.presetId = e.target.value;
+    // v0.2.0: live-update the trigger badge so operators see the
+    // implication of their preset choice immediately, before clicking
+    // Create batch.
+    const badgeEl = document.getElementById('seqNewPresetBadge');
+    if (badgeEl) badgeEl.innerHTML = seqPresetBadge(seqState.draft.presetId);
+  });
+}
+
+function seqPresetById(id) {
+  return state.presets.items.find(p => p.id === id);
+}
+
+function seqFillPresetSelect() {
+  const sel = document.getElementById('seqNewPreset');
+  if (!sel) return;
+  sel.innerHTML = "";
+  const items = state.presets.items || [];
+  if (items.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = ""; opt.textContent = "(no presets)";
+    sel.appendChild(opt);
+    return;
+  }
+  for (const p of items) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.name} · ${p.technique || 'CV'} · ${p.trigger_mode || 'manual'}`;
+    if (p.id === seqState.draft.presetId) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  // Default the draft to the first preset if nothing is set yet.
+  if (!seqState.draft.presetId && items.length > 0) {
+    seqState.draft.presetId = items[0].id;
+    sel.value = items[0].id;
+  }
+}
+
+function seqPresetBadge(presetId) {
+  const p = seqPresetById(presetId);
+  if (!p) return '';
+  const cls = p.trigger_mode === 'drop_detect' ? 'drop' : 'manual';
+  const label = p.trigger_mode === 'drop_detect'
+    ? 'Trigger: drop-detect' : 'Trigger: manual';
+  return `<span class="trigger-badge ${cls}"><span class="dot"></span>${label}</span>`;
+}
+
+function seqSuggestNextBatchId() {
+  let max = 0;
+  for (const b of seqState.batches) {
+    const m = /^B(\d+)$/.exec(b.id);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return 'B' + String(max + 1).padStart(3, '0');
+}
+
+function seqFmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function seqRenderDraft() {
+  const idEl = document.getElementById('seqNewBatchId');
+  const pfEl = document.getElementById('seqNewSamplePrefix');
+  if (!idEl || !pfEl) return;
+  idEl.value = seqState.draft.batchId || "";
+  pfEl.value = seqState.draft.samplePrefix || "";
+  idEl.setAttribute('placeholder', seqSuggestNextBatchId());
+  seqFillPresetSelect();
+  document.getElementById('seqNewPresetBadge').innerHTML =
+    seqPresetBadge(seqState.draft.presetId);
+}
+
+function seqRenderBatchesList() {
+  const root = document.getElementById('seqBatchesList');
+  if (!root) return;
+  root.innerHTML = "";
+
+  if (seqState.batches.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'card';
+    empty.style.cssText = 'text-align:center; color:var(--text-muted); font-size:13px; font-style:italic;';
+    empty.textContent = 'No batches yet. Create one above.';
+    root.appendChild(empty);
+    return;
+  }
+
+  seqState.batches.forEach((batch, bIdx) => {
+    const preset = seqPresetById(batch.presetId);
+    const card = document.createElement('div');
+    card.className = 'batch-card';
+
+    const head = document.createElement('div');
+    head.className = 'batch-head';
+    head.innerHTML = `
+      <div class="meta">
+        <span class="batch-id">${escape(batch.id)}</span>
+        <span class="batch-prefix">name: <b>${escape(batch.samplePrefix)}</b></span>
+        <span class="batch-preset">${escape((preset && preset.name) || batch.presetId)} · ${escape((preset && preset.technique) || '')}</span>
+        ${seqPresetBadge(batch.presetId)}
+      </div>`;
+    const actions = document.createElement('div');
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-secondary';
+    delBtn.textContent = 'Delete batch';
+    delBtn.onclick = () => seqDeleteBatch(bIdx);
+    actions.appendChild(delBtn);
+    head.appendChild(actions);
+    card.appendChild(head);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'seq-wrap';
+    const table = document.createElement('table');
+    table.className = 'seq-table';
+    // v0.2.x round 9: adaptive columns by sample-identification mode.
+    // Standard mode → Type / Conc. / Date / Operator / Method.
+    // Clinical mode → Donor / Collection / Site / Date / Operator.
+    const isClinical = (getSampleIdPreset() === 'clinical');
+    const headHtml = isClinical
+      ? `<th class="seq-row-num">#</th>
+         <th>Sample</th>
+         <th class="seq-col-donor">Donor</th>
+         <th class="seq-col-collection">Collection</th>
+         <th class="seq-col-site">Site</th>
+         <th class="seq-col-date">Date</th>
+         <th class="seq-col-operator">Operator</th>
+         <th style="text-align:right;"></th>`
+      : `<th class="seq-row-num">#</th>
+         <th>Sample</th>
+         <th class="seq-col-type">Type</th>
+         <th class="seq-col-conc">Conc.</th>
+         <th class="seq-col-date">Date</th>
+         <th class="seq-col-operator">Operator</th>
+         <th class="seq-col-method">Method</th>
+         <th style="text-align:right;"></th>`;
+    const tdColSpan = isClinical ? 8 : 8;
+    table.innerHTML = `<thead><tr>${headHtml}</tr></thead>`;
+    const tb = document.createElement('tbody');
+
+    if (batch.samples.length === 0) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td colspan="${tdColSpan}" class="seq-empty-table">No samples yet. Click Add sample to begin.</td>`;
+      tb.appendChild(tr);
+    } else {
+      batch.samples.forEach((sample, sIdx) => {
+        const filled = !!sample.info;
+        const info = sample.info || {};
+        const tr = document.createElement('tr');
+        if (!filled) tr.className = 'seq-row-empty';
+        const dateCell = filled ? seqFmtDate(sample.savedAt) : '—';
+        const operCell = filled ? escape(info.operator || state.operator || '—') : '—';
+        let middleCells;
+        if (isClinical) {
+          const donor      = filled ? (info.donor_pouch     || '—') : '—';
+          const collection = filled ? (info.collection_date || '—') : '—';
+          const site       = filled ? (info.clinical_site   || '—') : '—';
+          middleCells = `
+            <td class="seq-col-donor seq-col-meta">${escape(donor)}</td>
+            <td class="seq-col-collection seq-col-meta">${escape(collection)}</td>
+            <td class="seq-col-site seq-col-meta">${escape(site)}</td>
+            <td class="seq-col-date seq-col-meta">${dateCell}</td>
+            <td class="seq-col-operator seq-col-meta">${operCell}</td>`;
+        } else {
+          const conc = (filled && info.concentration_value)
+            ? `${info.concentration_value} ${info.concentration_unit || ''}`.trim()
+            : '—';
+          const sampleType = filled ? (info.sample_type || '—') : '—';
+          middleCells = `
+            <td class="seq-col-type seq-col-meta">${escape(sampleType)}</td>
+            <td class="seq-col-conc seq-col-meta">${escape(conc)}</td>
+            <td class="seq-col-date seq-col-meta">${dateCell}</td>
+            <td class="seq-col-operator seq-col-meta">${operCell}</td>
+            <td class="seq-col-method seq-col-meta">${escape((preset && preset.name) || '—')}</td>`;
+        }
+        tr.innerHTML = `
+          <td class="seq-row-num">${sIdx + 1}</td>
+          <td class="seq-sample-name">${escape(sample.name)}</td>
+          ${middleCells}
+        `;
+        const acts = document.createElement('td');
+        acts.className = 'seq-row-actions';
+        const editBtn = document.createElement('button');
+        editBtn.className = 'seq-icon-btn';
+        editBtn.title = filled ? 'Edit info' : 'Fill info';
+        editBtn.textContent = filled ? '✎' : '＋';
+        editBtn.onclick = () => seqEditSample(bIdx, sIdx);
+        const delSampleBtn = document.createElement('button');
+        delSampleBtn.className = 'seq-icon-btn danger';
+        delSampleBtn.title = 'Delete sample';
+        delSampleBtn.textContent = '✕';
+        delSampleBtn.onclick = () => seqDeleteSample(bIdx, sIdx);
+        acts.appendChild(editBtn);
+        acts.appendChild(delSampleBtn);
+        tr.appendChild(acts);
+        tb.appendChild(tr);
+      });
+    }
+    table.appendChild(tb);
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+
+    const foot = document.createElement('div');
+    foot.className = 'batch-foot';
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn';
+    addBtn.textContent = 'Add sample';
+    addBtn.onclick = () => seqAddSample(bIdx);
+    foot.appendChild(addBtn);
+    card.appendChild(foot);
+
+    root.appendChild(card);
+  });
+}
+
+function seqRenderConfirmButton() {
+  const btn = document.getElementById('seqBtnConfirm');
+  const help = document.getElementById('seqBtnConfirmHelp');
+  if (!btn) return;
+
+  const total = seqState.batches.reduce((n, b) => n + b.samples.length, 0);
+  // List every batch that's empty or has un-filled samples, so the
+  // operator can see exactly what's blocking Confirm.
+  const incomplete = seqState.batches
+    .map(b => {
+      if (b.samples.length === 0) return `${b.id} has no samples`;
+      const empty = b.samples.filter(s => !s.info).length;
+      if (empty > 0) return `${b.id} has ${empty} unfilled sample${empty === 1 ? '' : 's'}`;
+      return null;
+    })
+    .filter(Boolean);
+
+  const ok = (seqState.batches.length > 0 && total > 0 && incomplete.length === 0);
+  btn.disabled = !ok;
+
+  let msg = '';
+  if (!seqState.batches.length) msg = 'Create at least one batch first.';
+  else if (!total)             msg = 'Add at least one sample to a batch.';
+  else if (incomplete.length)  msg = `Cannot start yet — ${incomplete.join('; ')}.`;
+  else                         msg = `Ready: ${total} sample${total === 1 ? '' : 's'} across ${seqState.batches.length} batch${seqState.batches.length === 1 ? '' : 'es'}.`;
+  btn.title = msg;
+  if (help) help.textContent = msg;
+}
+
+function seqRender() {
+  seqRenderDraft();
+  seqRenderBatchesList();
+  seqRenderConfirmButton();
+}
+
+/* ----- Batch / sample CRUD ----- */
+function seqCreateBatch() {
+  const idIn  = document.getElementById('seqNewBatchId');
+  const pfIn  = document.getElementById('seqNewSamplePrefix');
+  const prSel = document.getElementById('seqNewPreset');
+  const id = (idIn.value.trim()) || seqSuggestNextBatchId();
+  const prefix = pfIn.value.trim();
+  const presetId = prSel.value;
+  if (!prefix) { toast('Sample name is required.', 'error'); return; }
+  if (!presetId) { toast('Pick a method preset first.', 'error'); return; }
+  if (seqState.batches.some(b => b.id === id)) {
+    toast(`Batch ID "${id}" already exists.`, 'error');
+    return;
+  }
+  seqState.batches.push({
+    id, samplePrefix: prefix, presetId,
+    samples: [], createdAt: new Date().toISOString(),
+  });
+  seqState.draft.batchId = "";
+  seqState.draft.samplePrefix = "";
+  seqState.draft.presetId = presetId;   // sticky
+  seqRender();
+}
+
+function seqDeleteBatch(bIdx) {
+  const batch = seqState.batches[bIdx];
+  if (!confirm(`Delete batch ${batch.id} and its ${batch.samples.length} sample(s)?`)) return;
+  seqState.batches.splice(bIdx, 1);
+  seqRender();
+}
+
+function seqAddSample(bIdx) {
+  const batch = seqState.batches[bIdx];
+  const n = batch.samples.length + 1;
+  batch.samples.push({
+    name: `${batch.samplePrefix}_${n}`,
+    info: null, savedAt: null,
+  });
+  seqEditSample(bIdx, batch.samples.length - 1);
+  seqRender();
+}
+
+function seqDeleteSample(bIdx, sIdx) {
+  const batch = seqState.batches[bIdx];
+  if (!confirm(`Delete sample ${batch.samples[sIdx].name}?`)) return;
+  batch.samples.splice(sIdx, 1);
+  // Renumber empty samples to stay sequential; samples with saved info
+  // keep their original name to avoid orphaning data.
+  batch.samples.forEach((s, i) => {
+    if (!s.info) s.name = `${batch.samplePrefix}_${i + 1}`;
+  });
+  seqRender();
+}
+
+/* ----- Per-sample info entry -----
+ * Uses the same Sample Identification UI as single-mode (Phase 1) — the
+ * operator can scan QR or fill manually, then click "Confirm sample".
+ * cursor.mode = "build" tells the Confirm-sample button (see
+ * onConfirmSampleClick) to save the meta back into the batch row and
+ * bounce to seq-build instead of advancing to Phase 2. */
+function seqEditSample(bIdx, sIdx) {
+  seqState.cursor = { mode: 'build', batchIdx: bIdx, sampleIdx: sIdx };
+  const sample = seqState.batches[bIdx].samples[sIdx];
+  const info = sample.info || {};
+
+  // v0.2.0: also clear the in-memory `state.sample` so seqSaveCurrentToBatch
+  // can never copy the previous sample's POST response into THIS row.  The
+  // sample pill and Confirm-sample button get reset, but confirmCard
+  // STAYS visible — it now hosts the QR scanner inline (round 6 fix).
+  state.sample = null;
+  state.scannedQrImage = null;
+  document.getElementById('btnConfirmSample')?.setAttribute('disabled', '');
+  setText('hdrSampleId', '—');
+
+  // Reset every field first so the previous sample's data can't leak
+  // into a brand-new sample's form.  The reset also auto-fills today's
+  // date into Prep date.  Sample ID gets pre-filled with the row's
+  // current name (auto-generated or operator-edited).
+  resetSampleIdForms(sample.name);
+
+  // For samples that already have info filled, hydrate the standard-
+  // form fields with what was previously saved.  Empty values stay as
+  // the defaults set by resetSampleIdForms (today / 'standard' / etc.).
+  const stdFields = [
+    ['inl_manStdSampleType', info.sample_type],
+    ['inl_manStdConcValue',  info.concentration_value],
+    ['inl_manStdConcUnit',   info.concentration_unit],
+    ['inl_manStdPrepDate',   info.prep_date],
+    ['inl_manStdLot',        info.lot],
+    ['inl_manStdSolvent',    info.solvent],
+    ['inl_manStdNotes',      info.notes],
+    ['manStdSampleType',     info.sample_type],
+    ['manStdConcValue',      info.concentration_value],
+    ['manStdConcUnit',       info.concentration_unit],
+    ['manStdPrepDate',       info.prep_date],
+    ['manStdLot',            info.lot],
+    ['manStdSolvent',        info.solvent],
+    ['manStdNotes',          info.notes],
+  ];
+  for (const [id, v] of stdFields) {
+    if (v == null || v === '') continue;
+    const el = document.getElementById(id);
+    if (el) el.value = v;
+  }
+  // Same for clinical-variant fields if any existed previously.
+  const clinFields = [
+    ['inl_manDonor',        info.donor_pouch],
+    ['inl_manDate',         info.collection_date],
+    ['inl_manStorage',      info.storage_location],
+    ['inl_manAliquot',      info.aliquot_purpose],
+    ['inl_manClinicalSite', info.clinical_site],
+    ['inl_manNotes',        info.notes],
+    ['manDonor',            info.donor_pouch],
+    ['manDate',             info.collection_date],
+    ['manStorage',          info.storage_location],
+    ['manAliquot',          info.aliquot_purpose],
+    ['manClinicalSite',     info.clinical_site],
+    ['manNotes',            info.notes],
+  ];
+  for (const [id, v] of clinFields) {
+    if (v == null || v === '') continue;
+    const el = document.getElementById(id);
+    if (el) el.value = v;
+  }
+  goPhase(1);
+  toast(`Editing ${sample.name} — fill info, then Confirm sample to return.`, 'info');
+}
+
+/* Save state.sample (set by submitManualSample or lookupSample) back
+ * into the batch row at the current cursor.  Called only when
+ * cursor.mode === "build". */
+function seqSaveCurrentToBatch() {
+  const c = seqState.cursor;
+  if (!c || c.mode !== 'build') return;
+  const batch = seqState.batches[c.batchIdx];
+  if (!batch || !batch.samples[c.sampleIdx]) return;
+  const sample = batch.samples[c.sampleIdx];
+  const meta = state.sample || {};
+  // Sync the row's display name with whatever sample_id the operator
+  // confirmed — they might have edited it from the auto-generated default.
+  if (meta.sample_id) sample.name = meta.sample_id;
+  sample.info = Object.assign({}, meta, {
+    operator: state.operator || meta.operator || '',
+  });
+  sample.savedAt = new Date().toISOString();
+}
+
+/* Wrapper for the Confirm-sample button.  In Build mode it bounces
+ * back to seq-build with the row saved; in Run mode (or single mode)
+ * it advances to Phase 2 (Sample Loading) as before. */
+function onConfirmSampleClick() {
+  if (seqState.cursor && seqState.cursor.mode === 'build') {
+    seqSaveCurrentToBatch();
+    const sid = (state.sample && state.sample.sample_id) || 'sample';
+    seqState.cursor = { mode: null, batchIdx: -1, sampleIdx: -1 };
+    seqRender();
+    goPhase('seq-build');
+    toast(`Saved ${sid} to batch.`, 'success');
+    return;
+  }
+  // Run mode + single mode → existing behaviour.
+  goPhase(2);
+}
+
+/* Confirm — kicks off the run.  Sets cursor.mode = "run", positions
+ * cursor at the first filled sample, stages that sample on the server
+ * so Phase 1's confirm card reflects it, then enters Phase 1.  After
+ * the operator confirms, Phase 2-5 run normally; on Phase 5 save the
+ * cursor advances to the next sample automatically. */
+function seqConfirmAndStart() {
+  const next = seqFindNextSampleFrom(0, -1, /*onlyFilled=*/ true);
+  if (!next) { toast('No filled samples to run.', 'error'); return; }
+  seqState.cursor = { mode: 'run', batchIdx: next.bIdx, sampleIdx: next.sIdx };
+  const sample = seqState.batches[next.bIdx].samples[next.sIdx];
+  const batch  = seqState.batches[next.bIdx];
+  // v0.2.x round 6: switch the SERVER's session preset to this batch's
+  // preset BEFORE staging the sample.  In Sequence mode the batch
+  // dictates the technique (CV vs SWV), not Configuration's default.
+  seqSyncSessionPreset(batch).then(() => {
+    seqStageSampleOnServer(sample, batch).then(() => {
+      goPhase(1);
+      toast(`Sequence started — verify ${sample.name} and click Confirm sample.`, 'info');
+    });
+  });
+}
+
+/* Find the next sample (with info filled, optionally) starting from
+ * (bIdx, sIdx).  Returns {bIdx, sIdx} or null when the end is reached.
+ * Skips samples already done / failed / skipped. */
+function seqFindNextSampleFrom(bIdx, sIdx, onlyFilled) {
+  for (let bi = bIdx; bi < seqState.batches.length; bi++) {
+    const batch = seqState.batches[bi];
+    const start = (bi === bIdx) ? sIdx + 1 : 0;
+    for (let si = start; si < batch.samples.length; si++) {
+      const s = batch.samples[si];
+      if (s.runStatus === 'done' || s.runStatus === 'skipped' || s.runStatus === 'failed_skip') continue;
+      if (onlyFilled && !s.info) continue;
+      return { bIdx: bi, sIdx: si };
+    }
+  }
+  return null;
+}
+
+/* After Phase 5 save (or on Skip), advance cursor to next sample.
+ * If no more samples, return to Build with a "complete" state. */
+function seqAdvanceToNextRun(currentRunStatus) {
+  const c = seqState.cursor;
+  if (!c || c.mode !== 'run') return;
+  const cur = seqState.batches[c.batchIdx]?.samples[c.sampleIdx];
+  if (cur) {
+    cur.runStatus = currentRunStatus || 'done';
+    cur.completedAt = new Date().toISOString();
+  }
+  const next = seqFindNextSampleFrom(c.batchIdx, c.sampleIdx, /*onlyFilled=*/ true);
+  if (!next) {
+    // Sequence finished
+    seqState.cursor = { mode: null, batchIdx: -1, sampleIdx: -1 };
+    state.sample = null;
+    seqRender();
+    goPhase('seq-build');
+    const counts = seqCountStatuses();
+    toast(`Sequence complete — ${counts.done} done, ${counts.failed} failed, ${counts.skipped} skipped.`,
+          counts.failed > 0 ? 'error' : 'success');
+    return;
+  }
+  seqState.cursor = { mode: 'run', batchIdx: next.bIdx, sampleIdx: next.sIdx };
+  const nextSample = seqState.batches[next.bIdx].samples[next.sIdx];
+  const nextBatch  = seqState.batches[next.bIdx];
+  // Reset Phase 1's per-sample state so the previous sample's data
+  // doesn't leak into the next iteration.  confirmCard stays visible
+  // (it hosts the QR scanner inline since round 6).
+  state.sample = null;
+  state.scannedQrImage = null;
+  document.getElementById('btnConfirmSample')?.setAttribute('disabled', '');
+  // v0.2.x round 6: chain stage + sync + goPhase(1) so a failure in
+  // any step doesn't leave the operator stranded — goPhase(1) always
+  // fires, and a stage failure surfaces as a toast.
+  (async () => {
+    try { await seqSyncSessionPreset(nextBatch); }
+    catch (e) { console.warn('preset sync failed:', e); }
+    try { await seqStageSampleOnServer(nextSample, nextBatch); }
+    catch (e) { console.warn('stage sample failed:', e); }
+    goPhase(1);
+    toast(`Next sample: ${nextSample.name}`, 'info');
+  })();
+}
+
+/* v0.2.x round 6 — switch the SERVER's session-active preset to the
+ * given batch's preset.  Sequence mode requires this because each
+ * batch can use a different preset (CV vs SWV, manual vs drop-detect),
+ * but `_STATE.preset` on the server is set ONCE at Begin session.
+ * Without this sync the chip would run whatever preset was active at
+ * Begin session time, regardless of which batch the sample belongs to. */
+async function seqSyncSessionPreset(batch) {
+  if (!batch || !batch.presetId) return;
+  if (state.selectedPresetId === batch.presetId) return;   // no-op
+  try {
+    await postJSON('/api/session/start', {
+      operator:    state.operator || val('fOperator') || '',
+      device_id:   state.selectedDeviceId,
+      preset_id:   batch.presetId,
+      sample_id_preset: getSampleIdPreset(),
+    });
+    state.selectedPresetId = batch.presetId;
+    refreshStatus();   // pull updated server state into the sidebar
+  } catch (e) {
+    console.warn('seqSyncSessionPreset failed:', e);
+  }
+}
+
+function seqCountStatuses() {
+  const counts = { done: 0, failed: 0, skipped: 0, pending: 0 };
+  for (const b of seqState.batches) for (const s of b.samples) {
+    if (s.runStatus === 'done') counts.done++;
+    else if (s.runStatus === 'failed' || s.runStatus === 'failed_skip') counts.failed++;
+    else if (s.runStatus === 'skipped') counts.skipped++;
+    else counts.pending++;
+  }
+  return counts;
+}
+
+/* Render the Sequence overview card on Phase 1.  Visible only during
+ * a Run (cursor.mode === "run").  Shows the full plan with current row
+ * highlighted and per-row status icons. */
+function seqRenderOverviewOnPhase1() {
+  const card = document.getElementById('seqOverviewCard');
+  const body = document.getElementById('seqOverviewBody');
+  const prog = document.getElementById('seqOverviewProgress');
+  if (!card || !body) return;
+
+  const c = seqState.cursor;
+  if (!c || c.mode !== 'run') {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+
+  const total = seqState.batches.reduce((n, b) => n + b.samples.length, 0);
+  let position = 0;
+  outer: for (let bi = 0; bi < seqState.batches.length; bi++) {
+    for (let si = 0; si < seqState.batches[bi].samples.length; si++) {
+      position++;
+      if (bi === c.batchIdx && si === c.sampleIdx) break outer;
+    }
+  }
+  const batchName = seqState.batches[c.batchIdx]?.id || '—';
+  prog.textContent = `Sample ${position} of ${total} · Batch ${batchName}`;
+
+  body.innerHTML = '';
+  seqState.batches.forEach((batch, bi) => {
+    const preset = seqPresetById(batch.presetId);
+    const wrap = document.createElement('div');
+    wrap.className = 'seq-overview-batch';
+    const head = document.createElement('div');
+    head.className = 'seq-overview-batch-head';
+    head.innerHTML = `
+      <span class="batch-id">${escape(batch.id)}</span>
+      <span>name: <b>${escape(batch.samplePrefix)}</b></span>
+      <span style="color:var(--text-muted); font-weight:500;">${escape((preset && preset.name) || '')}</span>`;
+    wrap.appendChild(head);
+    const t = document.createElement('table');
+    t.className = 'seq-overview-table';
+    // v0.2.x round 9: adaptive columns by sample-identification mode.
+    const isClinicalOv = (getSampleIdPreset() === 'clinical');
+    const thead = document.createElement('thead');
+    thead.innerHTML = isClinicalOv ? `
+      <tr>
+        <th class="num">#</th>
+        <th class="icon"></th>
+        <th>Sample</th>
+        <th>Donor</th>
+        <th class="seq-ov-col-date">Collection</th>
+        <th class="seq-ov-col-lot">Site</th>
+        <th class="seq-ov-col-solv">Aliquot</th>
+      </tr>` : `
+      <tr>
+        <th class="num">#</th>
+        <th class="icon"></th>
+        <th>Sample</th>
+        <th>Type</th>
+        <th>Conc.</th>
+        <th class="seq-ov-col-date">Date</th>
+        <th class="seq-ov-col-lot">Lot</th>
+        <th class="seq-ov-col-solv">Solvent</th>
+      </tr>`;
+    t.appendChild(thead);
+    const tb = document.createElement('tbody');
+    batch.samples.forEach((s, si) => {
+      const isCurrent = (bi === c.batchIdx && si === c.sampleIdx);
+      const status = s.runStatus || 'pending';
+      const tr = document.createElement('tr');
+      tr.className = (isCurrent ? 'current ' : '') +
+                     (status === 'done' ? 'done' :
+                      status === 'failed' || status === 'failed_skip' ? 'failed' :
+                      status === 'skipped' ? 'skipped' : '');
+      const icon =
+        isCurrent  ? '⏵' :
+        status === 'done'    ? '✓' :
+        status === 'failed' || status === 'failed_skip' ? '✗' :
+        status === 'skipped' ? '⊘' :
+        s.info ? '·' : '—';
+      const info2 = s.info || {};
+      // v0.2.x round 9: build columns adaptive to the active sample-id
+      // mode.  Clinical → Donor / Collection / Site / Aliquot.
+      // Standard → Type / Conc. / Date / Lot / Solvent.
+      let cells;
+      if (isClinicalOv) {
+        cells = `
+          <td>${escape(info2.donor_pouch || '—')}</td>
+          <td class="seq-ov-col-date">${escape(info2.collection_date || '—')}</td>
+          <td class="seq-ov-col-lot">${escape(info2.clinical_site || '—')}</td>
+          <td class="seq-ov-col-solv">${escape(info2.aliquot_purpose || '—')}</td>`;
+      } else {
+        const conc2 = info2.concentration_value
+          ? `${info2.concentration_value} ${info2.concentration_unit || ''}`.trim()
+          : '';
+        const date2 = info2.prep_date || (s.savedAt ? seqFmtDate(s.savedAt) : '');
+        cells = `
+          <td>${escape(info2.sample_type || '—')}</td>
+          <td>${escape(conc2 || '—')}</td>
+          <td class="seq-ov-col-date">${escape(date2 || '—')}</td>
+          <td class="seq-ov-col-lot">${escape(info2.lot || '—')}</td>
+          <td class="seq-ov-col-solv">${escape(info2.solvent || '—')}</td>`;
+      }
+      tr.innerHTML = `
+        <td class="num">${si + 1}</td>
+        <td class="icon">${icon}</td>
+        <td class="nm">${escape(s.name)}</td>
+        ${cells}
+      `;
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    wrap.appendChild(t);
+    body.appendChild(wrap);
+  });
+}
+
+async function seqStageSampleOnServer(sample, batch) {
+  // POST the staged sample as if the operator had filled it manually,
+  // so the server's _STATE.sample_id / sample_meta are correct when
+  // Phase 1 renders the confirm card.
+  const info = sample.info || {};
+  const variant = info.sample_id_preset || getSampleIdPreset();
+  const payload = {
+    sample_id: sample.name,
+    sample_id_preset: variant,
+    notes: info.notes || `Sequence batch ${batch.id}`,
+  };
+  if (variant === 'standard') {
+    Object.assign(payload, {
+      solution_name:       info.solution_name || batch.samplePrefix,
+      concentration_value: info.concentration_value || '',
+      concentration_unit:  info.concentration_unit  || 'mM',
+      prep_date: info.prep_date || '',
+      lot:       info.lot || '',
+      solvent:   info.solvent || '',
+    });
+  } else {
+    Object.assign(payload, {
+      donor_pouch:      info.donor_pouch || '',
+      collection_date:  info.collection_date || '',
+      storage_location: info.storage_location || '',
+      aliquot_purpose:  info.aliquot_purpose || '',
+      clinical_site:    info.clinical_site || '',
+    });
+  }
+  try {
+    const d = await postJSON('/api/sample/manual', payload);
+    if (d && d.meta) {
+      state.sample = d.meta;
+      setText('hdrSampleId', sample.name);
+      // Render the confirmCard so the operator sees the prefilled info
+      renderConfirmCard(d.meta, 'SEQUENCE');
+      const btn = document.getElementById('btnConfirmSample');
+      if (btn) btn.disabled = false;
+    }
+  } catch (e) {
+    console.warn('seqStageSampleOnServer failed:', e);
+  }
 }

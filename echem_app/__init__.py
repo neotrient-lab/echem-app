@@ -11,6 +11,36 @@ The middle digit always matches the alpha_<N> folder it lives in.
 
 Version log
 -----------
+0.2.0   Branched from 0.1.15 into the alpha_2/ folder.  Major additions:
+        (a) SWV technique support — SWVParameters dataclass + build_swv_script
+            ported from cv_app/ into echem_app/measurement.py with new e_dep
+            and t_dep fields for the deposition step (CV doesn't need them,
+            SWV does).  The runner dispatches by preset.technique so CV and
+            SWV coexist in one app.  New preset preset-swv-1 mirrors the
+            PSTrace swv_test.psmethod values: E_begin -1 V, E_end +1 V,
+            E_step 5 mV, frequency 25 Hz, amplitude 25 mV, deposition
+            -1 V for 60 s, 15 s equilibration, autorange 100 nA – 1 mA
+            start 10 µA (matches CV preset-1), bandwidth 292.527 Hz,
+            pgstat_mode 3 (PSTrace auto-pick), manual trigger.
+        (b) Sample-identification preset radio in Configuration —
+            "Clinical sample" (existing v0.1.15 form, fields renamed
+            Hospital → Clinical) or "Standard solution" (new fields:
+            Solution name, Concentration value+unit, Prep date, Lot,
+            Solvent/matrix, Notes).  The picked preset drives which form
+            renders during the Sample Identification step.
+        (c) Run-mode chooser — Single (existing v0.1.15 wizard) or
+            Sequence (multi-batch, multi-sample plan, refined from the
+            sequence_batch_demo.html prototype).  The Sequence flow emits
+            batch_manifest.json consumed by the run page.
+        (d) CSV writer change — every saved CSV now starts with a
+            `# key=value` metadata block (experiment, operator, device_id,
+            sample_id, generated_at, full preset parameter list, status,
+            notes) so the CSV is self-describing.  The JSON sidecar is
+            kept for backwards compatibility with downstream tooling.
+        (e) Word audit for the medical-device context — "Hospital site"
+            field renamed to "Clinical site" throughout.  Other strings
+            reviewed for consistency with IVD terminology.
+
 0.1.0   First in-team alpha test release.  Branched from 0.7.x with a full
         mobile UI pass (single-form sample identification, bottom Prev/Next
         navigation, Weather-app rhythm), responsive desktop layout for
@@ -207,4 +237,4 @@ Version log
         of an opaque pyserial crash.
 """
 
-__version__ = "0.1.15"
+__version__ = "0.2.0"

@@ -35,9 +35,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from cv_app.params import CVParameters, Sample
+from cv_app.params import CVParameters, SWVParameters, Sample
 from cv_app.script_builder import (
-    _v_to_mV, _vps_to_mV_per_s, _seconds_to_ms, build_cv_script,
+    _v_to_mV, _vps_to_mV_per_s, _seconds_to_ms,
+    build_cv_script, build_swv_script,
 )
 
 LOG = logging.getLogger(__name__)
@@ -458,7 +459,10 @@ def build_dropdetect_cv_script(params: CVParameters,
 
 @dataclass
 class MeasurementOptions:
-    params: CVParameters
+    # `params` may be either CVParameters or SWVParameters in v0.2.0+.
+    # The runner picks the right script builder based on the dataclass
+    # type so callers don't need to keep technique state separately.
+    params: Union[CVParameters, SWVParameters]
     sample_id: str
     operator: str
     device_id: str
@@ -481,11 +485,24 @@ class MeasurementOptions:
     replay_pace_s: float = 0.05
     cancel_event: Optional[threading.Event] = None
 
+    @property
+    def technique(self) -> str:
+        """`"SWV"` if running an SWV experiment, otherwise `"CV"`."""
+        return "SWV" if isinstance(self.params, SWVParameters) else "CV"
+
 
 def _save_csv(path: Path, samples: List[Sample], opts: MeasurementOptions):
+    """Write the run's CSV with a self-describing `# key=value` header.
+
+    Column layout switches on opts.technique:
+        CV  : index, scan, potential_V, current_A, status, current_range
+        SWV : index, potential_V, current_fwd_A, current_rev_A,
+              current_diff_A, status, current_range
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    technique = opts.technique
     with path.open("w", newline="", encoding="utf-8") as fh:
-        fh.write("# experiment=CV\n")
+        fh.write(f"# experiment={technique}\n")
         fh.write(f"# operator={opts.operator}\n")
         fh.write(f"# device_id={opts.device_id}\n")
         fh.write(f"# sample_id={opts.sample_id}\n")
@@ -493,14 +510,38 @@ def _save_csv(path: Path, samples: List[Sample], opts: MeasurementOptions):
         for k, v in asdict(opts.params).items():
             fh.write(f"# {k}={v}\n")
         w = csv.writer(fh)
-        w.writerow([
-            "index", "scan", "potential_V", "current_A", "status", "current_range"
-        ])
-        for s in samples:
+        if technique == "SWV":
             w.writerow([
-                s.index, s.scan, s.potential_v, s.current_a,
-                s.status or "", s.current_range or "",
+                "index", "potential_V",
+                "current_fwd_A", "current_rev_A", "current_diff_A",
+                "status", "current_range",
             ])
+            for s in samples:
+                ifwd = s.current_fwd_a
+                irev = s.current_rev_a
+                idiff: Any = ""
+                if ifwd is not None and irev is not None:
+                    try:
+                        idiff = float(ifwd) - float(irev)
+                    except (TypeError, ValueError):
+                        idiff = ""
+                w.writerow([
+                    s.index, s.potential_v,
+                    ifwd if ifwd is not None else "",
+                    irev if irev is not None else "",
+                    idiff,
+                    s.status or "", s.current_range or "",
+                ])
+        else:
+            w.writerow([
+                "index", "scan", "potential_V", "current_A",
+                "status", "current_range",
+            ])
+            for s in samples:
+                w.writerow([
+                    s.index, s.scan, s.potential_v, s.current_a,
+                    s.status or "", s.current_range or "",
+                ])
 
 
 def _resolve_csv_path(opts: MeasurementOptions) -> Path:
@@ -600,24 +641,36 @@ def iter_measurement(opts: MeasurementOptions) -> Iterator[Dict[str, Any]]:
                "message": f"Could not import device layer: {exc}"}
         return
 
-    # CV body for both modes — for manual mode we may prepend a wait so
-    # the operator's "post_drop_settle_s" still applies as a settle time
-    # at the start of the sweep.
-    cv_script = build_cv_script(opts.params)
+    # Body script for both modes (CV or SWV).  For manual mode we may
+    # prepend a `wait` so the operator's "post_drop_settle_s" still
+    # applies as a settle time at the start of the sweep.
+    is_swv = (opts.technique == "SWV")
+    if is_swv:
+        body_script = build_swv_script(opts.params)
+    else:
+        body_script = build_cv_script(opts.params)
     if (not opts.use_drop_detect
             and opts.post_drop_settle_s and opts.post_drop_settle_s > 0):
         ms = int(round(opts.post_drop_settle_s * 1000.0))
-        cv_script = cv_script.replace("cell_on\n",
-                                      f"cell_on\nwait {ms}m\n", 1)
+        body_script = body_script.replace("cell_on\n",
+                                          f"cell_on\nwait {ms}m\n", 1)
+    # Backwards-compat alias used by the rest of this function (the
+    # variable used to be called `cv_script` even though it can now also
+    # be an SWV script).
+    cv_script = body_script
 
     # Per-cycle path length used to derive the cycle index from the
     # cumulative |Δp|.  A standard CV cycle traces e_begin → e_vtx1 →
     # e_vtx2 → e_begin, so the path length is the sum of those three legs.
-    per_cycle_path = (
-        abs(opts.params.e_vtx1 - opts.params.e_begin)
-        + abs(opts.params.e_vtx2 - opts.params.e_vtx1)
-        + abs(opts.params.e_begin - opts.params.e_vtx2)
-    )
+    # SWV is one-direction so per_cycle_path is just |E_end - E_begin|.
+    if is_swv:
+        per_cycle_path = abs(opts.params.e_end - opts.params.e_begin)
+    else:
+        per_cycle_path = (
+            abs(opts.params.e_vtx1 - opts.params.e_begin)
+            + abs(opts.params.e_vtx2 - opts.params.e_vtx1)
+            + abs(opts.params.e_begin - opts.params.e_vtx2)
+        )
     cumulative_path = 0.0
     last_potential_for_path: Optional[float] = None
 
@@ -654,7 +707,12 @@ def iter_measurement(opts: MeasurementOptions) -> Iterator[Dict[str, Any]]:
             # second script right after the first one terminates — the
             # CV script would be sent but never executed, leaving the
             # operator stuck after the post-drop countdown.
-            if opts.use_drop_detect:
+            # Drop-detect builders are CV-specific (they fuse a GPIO/voltage
+            # wait loop with a CV sweep into one script).  SWV presets have
+            # a deposition step that needs precise timing the drop-detect
+            # script can't accommodate, so SWV always uses manual mode —
+            # the operator pre-loads the drop, then presses Begin.
+            if opts.use_drop_detect and not is_swv:
                 if opts.drop_detect_method == "gpio":
                     script = build_combined_dropdetect_cv_script(
                         opts.params,
@@ -677,12 +735,15 @@ def iter_measurement(opts: MeasurementOptions) -> Iterator[Dict[str, Any]]:
                        "drop_detect_method": opts.drop_detect_method}
                 dev.send_script_text(script)
             else:
-                # MANUAL MODE — straight to CV (with optional script-side
-                # settle wait already inserted above).
-                LOG.info("Sending CV MethodSCRIPT (%d bytes)", len(cv_script))
+                # MANUAL MODE — send the body script directly (CV or SWV).
+                # For SWV with drop_detect requested, we transparently fall
+                # back to manual since drop-detect is CV-only.
+                LOG.info("Sending %s MethodSCRIPT (%d bytes)",
+                         opts.technique, len(cv_script))
                 yield {"event": "drop_armed",
                        "device_type": dev.device_type_str,
-                       "use_drop_detect": False}
+                       "use_drop_detect": False,
+                       "technique": opts.technique}
                 dev.send_script_text(cv_script)
 
             seen_first_sample = False
@@ -723,19 +784,32 @@ def iter_measurement(opts: MeasurementOptions) -> Iterator[Dict[str, Any]]:
                     continue   # marker is not a sample
 
                 potential = current = None
+                # SWV packets carry three currents (i = differential,
+                # f = forward, r = reverse).  We collect them in order:
+                # the FIRST A is `current` (the displayed signal — for
+                # CV that's i, for SWV that's i_diff), and any further
+                # As land in current_fwd / current_rev.
+                current_fwd = current_rev = None
                 status = current_range = None
+                a_seen = 0
                 for var in pkg:
                     if potential is None and var.type.unit == "V":
                         potential = var.value
-                    elif current is None and var.type.unit == "A":
-                        current = var.value
-                        if "status" in var.metadata:
-                            from palmsens.mscript import metadata_status_to_text  # type: ignore
-                            status = metadata_status_to_text(var.metadata["status"])
-                        if "range" in var.metadata:
-                            from palmsens.mscript import metadata_range_to_text  # type: ignore
-                            current_range = metadata_range_to_text(
-                                dev.device_type_str, var.type, var.metadata["range"])
+                    elif var.type.unit == "A":
+                        if a_seen == 0:
+                            current = var.value
+                            if "status" in var.metadata:
+                                from palmsens.mscript import metadata_status_to_text  # type: ignore
+                                status = metadata_status_to_text(var.metadata["status"])
+                            if "range" in var.metadata:
+                                from palmsens.mscript import metadata_range_to_text  # type: ignore
+                                current_range = metadata_range_to_text(
+                                    dev.device_type_str, var.type, var.metadata["range"])
+                        elif a_seen == 1:
+                            current_fwd = var.value
+                        elif a_seen == 2:
+                            current_rev = var.value
+                        a_seen += 1
                 if potential is None or current is None:
                     continue
 
@@ -750,11 +824,17 @@ def iter_measurement(opts: MeasurementOptions) -> Iterator[Dict[str, Any]]:
                 # Cycle index from cumulative path length.  Robust against
                 # PalmSens CV ordering (e_begin → e_vtx1 → e_vtx2 → e_begin)
                 # because we don't depend on which point is "near e_begin".
+                # SWV is a one-direction sweep with no scans — `scan`
+                # stays 0 and `n_scans` isn't accessed (SWVParameters
+                # doesn't have that attribute).
                 if last_potential_for_path is not None:
                     cumulative_path += abs(potential - last_potential_for_path)
                 last_potential_for_path = potential
-                if per_cycle_path > 0 and opts.params.n_scans > 1:
-                    scan = min(int(opts.params.n_scans) - 1,
+                n_scans_val = getattr(opts.params, "n_scans", 1)
+                if (not is_swv
+                        and per_cycle_path > 0
+                        and n_scans_val > 1):
+                    scan = min(int(n_scans_val) - 1,
                                int(cumulative_path // per_cycle_path))
                 else:
                     scan = 0
@@ -763,6 +843,7 @@ def iter_measurement(opts: MeasurementOptions) -> Iterator[Dict[str, Any]]:
                     potential_v=potential, current_a=current,
                     index=index, scan=scan,
                     status=status, current_range=current_range,
+                    current_fwd_a=current_fwd, current_rev_a=current_rev,
                 )
                 samples.append(s)
 
@@ -770,7 +851,7 @@ def iter_measurement(opts: MeasurementOptions) -> Iterator[Dict[str, Any]]:
                     yield {"event": "scan_complete", "scan": last_scan}
                 last_scan = scan
 
-                yield {
+                evt: Dict[str, Any] = {
                     "event": "sample",
                     "potential_v": potential,
                     "current_a": current,
@@ -779,6 +860,15 @@ def iter_measurement(opts: MeasurementOptions) -> Iterator[Dict[str, Any]]:
                     "status": status,
                     "range": current_range,
                 }
+                # Include forward / reverse currents whenever the
+                # packet has them (SWV with `pck_add f` / `pck_add r`).
+                # The frontend uses these to draw the three-trace SWV
+                # plot (i_fwd, i_rev, i_diff).
+                if current_fwd is not None:
+                    evt["current_fwd_a"] = current_fwd
+                if current_rev is not None:
+                    evt["current_rev_a"] = current_rev
+                yield evt
                 index += 1
     except Exception as exc:
         LOG.exception("Measurement failed")
@@ -825,3 +915,42 @@ def cv_params_from_preset(preset: Dict[str, Any]) -> CVParameters:
             except (ValueError, TypeError):
                 pass
     return p
+
+
+def swv_params_from_preset(preset: Dict[str, Any]) -> SWVParameters:
+    """Materialise an SWVParameters dataclass from a preset's `swv` block.
+
+    Mirrors `cv_params_from_preset` for SWV.  Optional dataclass fields
+    that default to None (e.g. `acquisition_frac_autoadjust`) are passed
+    through unchanged because their `cur` is None, so `isinstance(cur, ...)`
+    type-cast checks all fail and the value lands as-is.
+    """
+    swv = (preset or {}).get("swv") or {}
+    p = SWVParameters()
+    for k, v in swv.items():
+        if hasattr(p, k):
+            try:
+                cur = getattr(p, k)
+                if isinstance(cur, bool):
+                    setattr(p, k, bool(v))
+                elif isinstance(cur, int) and not isinstance(cur, bool):
+                    setattr(p, k, int(v))
+                elif isinstance(cur, float):
+                    setattr(p, k, float(v))
+                else:
+                    setattr(p, k, v)
+            except (ValueError, TypeError):
+                pass
+    return p
+
+
+def params_from_preset(preset: Dict[str, Any]):
+    """Dispatch by preset.technique → CV or SWV parameters.
+
+    Returns a 2-tuple `(technique, params)` so callers can pick the right
+    `build_*_script` and CSV writer without re-reading the preset.
+    """
+    technique = ((preset or {}).get("technique") or "CV").upper()
+    if technique == "SWV":
+        return technique, swv_params_from_preset(preset)
+    return "CV", cv_params_from_preset(preset)

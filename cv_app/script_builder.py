@@ -191,6 +191,11 @@ def build_swv_script(params: SWVParameters) -> str:
             f"set_autoranging ba {params.auto_range_low} {params.auto_range_high}"
         )
 
+    # Deposition step (optional): held at e_dep for t_dep seconds, sampled
+    # every pretreat_interval_s.  Skipped when t_dep <= 0.
+    e_dep_mv = _v_to_mV(getattr(params, "e_dep", 0.0))
+    t_dep_s = int(round(getattr(params, "t_dep", 0.0)))
+
     lines = [
         "e",
         "var c",
@@ -203,8 +208,27 @@ def build_swv_script(params: SWVParameters) -> str:
         f"set_range_minmax da {e_range_min} {e_range_max}",
         f"set_range ba {params.current_range}",
         *autorange_lines,
+        # PSTrace holds the deposition / equilibration potential before
+        # turning the cell on, so the cell engages already at e_dep
+        # (or e_begin if no deposition).  Mirrors the CV builder's set_e.
+        f"set_e {e_dep_mv if t_dep_s > 0 else _v_to_mV(pretreat_pot_v)}",
         "cell_on",
     ]
+
+    if getattr(params, "cell_on_settle_s", 0) > 0:
+        lines.append(f"wait {_seconds_to_ms(params.cell_on_settle_s)}")
+
+    if t_dep_s > 0:
+        lines.extend(
+            [
+                "# Deposition step (analyte accumulation at e_dep)",
+                (
+                    f"meas_loop_ca p c {e_dep_mv} "
+                    f"{pretreat_interval} {t_dep_s}"
+                ),
+                "endloop",
+            ]
+        )
 
     if params.pretreat_duration_s > 0:
         lines.extend(
